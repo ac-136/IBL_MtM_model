@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-import wandb
+# import wandb
 import os
 from utils.utils import move_batch_to_device, metrics_list, plot_gt_pred, plot_neurons_r2
 from tqdm import tqdm
@@ -28,6 +28,8 @@ class Trainer():
         self.config = kwargs.get("config", None)
         self.stitching = kwargs.get("stitching", None)
         self.num_neurons = kwargs.get("num_neurons", None)
+        
+        self.just_spikes = kwargs.get("just_spikes", False)
 
         self.model_class = self.config.model.model_class
 
@@ -44,7 +46,8 @@ class Trainer():
         self.masking_mode = model.encoder.masker.mode
         self.masking_schemes = ['neuron', 'causal']
         if self.masking_mode == "all":
-            self.masking_schemes += ['intra-region', 'inter-region']
+            if not self.just_spikes:
+                self.masking_schemes += ['intra-region', 'inter-region']
 
         if self.masking_mode in ["combined", "all"]:
             print("(train) switch between masking modes: ", self.masking_schemes)
@@ -74,18 +77,18 @@ class Trainer():
                             active_neurons=self.session_active_neurons[0][:5]
                         )
 
-                        if self.config.wandb.use:
-                            wandb.log({"best_epoch": epoch,
-                                    "best_gt_pred_fig": wandb.Image(gt_pred_fig['plot_gt_pred']),
-                                    "best_r2_fig": wandb.Image(gt_pred_fig['plot_r2'])})
+                        # if self.config.wandb.use:
+                        #     wandb.log({"best_epoch": epoch,
+                        #             "best_gt_pred_fig": wandb.Image(gt_pred_fig['plot_gt_pred']),
+                        #             "best_r2_fig": wandb.Image(gt_pred_fig['plot_r2'])})
 
-                        else:
-                            gt_pred_fig['plot_gt_pred'].savefig(
-                                os.path.join(self.log_dir, f"best_gt_pred_fig_{epoch}.png")
-                            )
-                            gt_pred_fig['plot_r2'].savefig(
-                                os.path.join(self.log_dir, f"best_r2_fig_{epoch}.png")
-                            )
+                        # else:
+                        gt_pred_fig['plot_gt_pred'].savefig(
+                            os.path.join(self.log_dir, f"best_gt_pred_fig_{epoch}.png")
+                        )
+                        gt_pred_fig['plot_r2'].savefig(
+                            os.path.join(self.log_dir, f"best_r2_fig_{epoch}.png")
+                        )
 
                 print(f"epoch: {epoch} eval loss: {eval_epoch_results['eval_loss']} {self.metric}: {eval_epoch_results[f'eval_trial_avg_{self.metric}']}")
 
@@ -103,33 +106,33 @@ class Trainer():
                         epoch=epoch,
                         active_neurons=self.session_active_neurons[0][:5]
                     )
-                    if self.config.wandb.use:
-                        wandb.log({
-                            "gt_pred_fig": wandb.Image(gt_pred_fig['plot_gt_pred']),
-                            "r2_fig": wandb.Image(gt_pred_fig['plot_r2'])
-                        })
-                    else:
-                        gt_pred_fig['plot_gt_pred'].savefig(
-                            os.path.join(self.log_dir, f"gt_pred_fig_{epoch}.png")
-                        )
-                        gt_pred_fig['plot_r2'].savefig(
-                            os.path.join(self.log_dir, f"r2_fig_{epoch}.png")
-                        )
+                    # if self.config.wandb.use:
+                    #     wandb.log({
+                    #         "gt_pred_fig": wandb.Image(gt_pred_fig['plot_gt_pred']),
+                    #         "r2_fig": wandb.Image(gt_pred_fig['plot_r2'])
+                    #     })
+                    # else:
+                    gt_pred_fig['plot_gt_pred'].savefig(
+                        os.path.join(self.log_dir, f"gt_pred_fig_{epoch}.png")
+                    )
+                    gt_pred_fig['plot_r2'].savefig(
+                        os.path.join(self.log_dir, f"r2_fig_{epoch}.png")
+                    )
 
-            # wandb log
-            if self.config.wandb.use:
-                wandb.log({
-                    "train_loss": train_epoch_results['train_loss'],
-                    "eval_loss": eval_epoch_results['eval_loss'],
-                    f"eval_trial_avg_{self.metric}": eval_epoch_results[f'eval_trial_avg_{self.metric}']
-                })
+            # # wandb log
+            # if self.config.wandb.use:
+            #     wandb.log({
+            #         "train_loss": train_epoch_results['train_loss'],
+            #         "eval_loss": eval_epoch_results['eval_loss'],
+            #         f"eval_trial_avg_{self.metric}": eval_epoch_results[f'eval_trial_avg_{self.metric}']
+            #     })
                 
         # save last model
         self.save_model(name="last", epoch=epoch)
         
-        if self.config.wandb.use:
-            wandb.log({"best_eval_loss": best_eval_loss,
-                       f"best_eval_trial_avg_{self.metric}": best_eval_trial_avg_metric})
+        # if self.config.wandb.use:
+        #     wandb.log({"best_eval_loss": best_eval_loss,
+        #                f"best_eval_trial_avg_{self.metric}": best_eval_trial_avg_metric})
             
     def train_epoch(self, epoch):
         train_loss = 0.
@@ -146,6 +149,7 @@ class Trainer():
                     self.model.encoder.masker.ratio = self.masking_ratio
             else:
                 masking_mode = self.masking_mode
+            # print(f"masking: {masking_mode}")
             outputs = self._forward_model_outputs(batch, masking_mode)
             loss = outputs.loss
             loss.backward()

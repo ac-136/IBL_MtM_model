@@ -31,7 +31,8 @@ ap.add_argument("--model_name", type=str, default="NDT1")
 ap.add_argument("--prompting", type=str, default="False")
 ap.add_argument("--train", type=str, default="True")
 ap.add_argument("--eval", type=str, default="True")
-ap.add_argument("--base_path", type=str, default='/mnt/home/yzhang1/ceph')
+# ap.add_argument("--base_path", type=str, default='/mnt/home/yzhang1/ceph')
+ap.add_argument("--base_path", type=str, default='/work/hdd/beml/ac136')
 ap.add_argument("--num_train_sessions", type=int, default=1)
 ap.add_argument('--use_dummy', action='store_true')
 args = ap.parse_args()
@@ -41,6 +42,12 @@ base_path = args.base_path
 model_acroynm = args.model_name.lower()
 num_train_sessions = args.num_train_sessions
 assert num_train_sessions > 0, 'num_train_sessions should be greater than 0.'
+
+print()
+print("Args to finetune_eval_multi_session: ")
+for arg, value in vars(args).items():
+    print(f"{arg}: {value}")
+print()
 
 if args.prompting == "True":
     if args.model_name == 'NDT1':
@@ -97,15 +104,18 @@ try:
                             )
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
+        
+        print("Meta data: ")
         print(meta_data)
+        print()
 
-        if config.wandb.use:
-            import wandb
-            wandb.init(project=config.wandb.project, 
-                    entity=config.wandb.entity, 
-                    config=config, 
-                    name="finetune_num_session_{}_model_{}_method_{}_mask_{}_stitch_{}_{}".format(num_train_sessions,config.model.model_class, config.method.model_kwargs.method_name,args.mask_mode, config.model.encoder.stitching,eid)
-                    )
+        # if config.wandb.use:
+        #     import wandb
+        #     wandb.init(project=config.wandb.project, 
+        #             entity=config.wandb.entity, 
+        #             config=config, 
+        #             name="finetune_num_session_{}_model_{}_method_{}_mask_{}_stitch_{}_{}".format(num_train_sessions,config.model.model_class, config.method.model_kwargs.method_name,args.mask_mode, config.model.encoder.stitching,eid)
+        #             )
 
         if args.model_name in ["NDT1", "iTransformer"]:
             max_space_length = config.data.max_space_length
@@ -158,10 +168,17 @@ try:
         model_class = NAME2MODEL[config.model.model_class]
         model = model_class(config.model, **config.method.model_kwargs, **meta_data)
         model = accelerator.prepare(model)
+
         # load pretrain model
-        pretrain_model_path = f'{base_path}/results/train/num_session_{num_train_sessions}/model_{config.model.model_class}/method_{config.method.model_kwargs.method_name}/mask_{args.mask_mode}/stitch_{config.model.encoder.stitching}/model_best.pt'
+        if args.mask_mode == 'temporal':
+            mask_path = 'baseline'
+        elif args.mask_mode == 'all':
+            mask_path = 'MtM'
+
+        pretrain_model_path = f'{base_path}/models/ibl-foundation-model__multi-{args.model_name}-{mask_path}-{num_train_sessions}-sessions/model_best.pt'
         if num_train_sessions > 1:
-            print('Load pretrain model from:', pretrain_model_path)
+            print('\nLoad pretrain model from:', pretrain_model_path)
+            print()
             # load weights that can be found in the pretrain model
             model.load_state_dict(torch.load(pretrain_model_path)['model'].state_dict(), strict=False)
         else:
@@ -177,6 +194,7 @@ try:
                     )
         
         print(config)
+        print()
         
         trainer_kwargs = {
             "log_dir": log_dir,
@@ -200,12 +218,12 @@ try:
     #########################
 
     if args.eval == "True":
-        import wandb
-        wandb.init(project=config.wandb.project, 
-                entity=config.wandb.entity, 
-                config=config, 
-                name=f"eval_num_session_{num_train_sessions}_model_{args.model_name}_method_ssl_mask_{args.mask_mode}_stitch_True_{eid}"
-                )
+        # import wandb
+        # wandb.init(project=config.wandb.project, 
+        #         entity=config.wandb.entity, 
+        #         config=config, 
+        #         name=f"eval_num_session_{num_train_sessions}_model_{args.model_name}_method_ssl_mask_{args.mask_mode}_stitch_True_{eid}"
+        #         )
         print('Start model evaluation.')
         print('=======================')
         
@@ -221,10 +239,11 @@ try:
         forward_pred = True
         inter_region = True
         intra_region = True
-        choice_decoding = True
-        continuous_decoding = True
+        choice_decoding = False
+        continuous_decoding = False
         
-        print(mask_name)
+        print("Mask name: ", mask_name)
+        print()
         
         if args.prompting == "True":
             model_config = f"src/configs/{model_acroynm}_stitching_prompting_eval.yaml"
@@ -234,6 +253,7 @@ try:
         configs = {
             'model_config': model_config,
             'model_path': f'{base_path}/results/finetune/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/model_best.pt',
+            # 'model_path': f'{base_path}/models/ibl-foundation-model__multi-{args.model_name}-baseline-{num_train_sessions}-sessions/model_best.pt',
             'trainer_config': f'src/configs/trainer_{model_acroynm}.yaml',
             'dataset_path': None, 
             'test_size': 0.2,
@@ -242,7 +262,7 @@ try:
             'eid': eid,
             'stitching': True,
             'num_sessions': 1 
-        }  
+        }
         
         
         # load your model and dataloader
@@ -269,7 +289,7 @@ try:
                             dataset, 
                             **co_smoothing_configs)
             print(results)
-            wandb.log(results)
+            # wandb.log(results)
         
         # forward prediction
         if forward_pred:
@@ -293,7 +313,7 @@ try:
                             dataset, 
                             **co_smoothing_configs)
             print(results)
-            wandb.log(results)
+            # wandb.log(results)
             
         
         # inter-region
@@ -318,7 +338,7 @@ try:
                             dataset, 
                             **co_smoothing_configs)
             print(results)
-            wandb.log(results)
+            # wandb.log(results)
 
         
         # intra-region
@@ -343,7 +363,7 @@ try:
                             dataset, 
                             **co_smoothing_configs)
             print(results)
-            wandb.log(results)
+            # wandb.log(results)
         
         
         if choice_decoding:
@@ -369,7 +389,7 @@ try:
             }  
             results = behavior_decoding(**configs)
             print(results)
-            wandb.log(results)
+            # wandb.log(results)
         
         
         if continuous_decoding:
@@ -395,7 +415,7 @@ try:
             }  
             results = behavior_decoding(**configs)
             print(results)
-            wandb.log(results)
+            # wandb.log(results)
 
 finally:
     if args.use_dummy:
@@ -405,5 +425,3 @@ finally:
     print('=======================')
     print('Finish model training.')
     print('=====================')
-    
-

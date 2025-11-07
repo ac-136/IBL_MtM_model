@@ -1,7 +1,7 @@
 from datasets import load_dataset, load_from_disk, concatenate_datasets, DatasetDict
 from accelerate import Accelerator
 from loader.make_loader import make_loader
-from utils.dataset_utils import load_ibl_dataset
+from utils.dataset_utils import load_ibl_dataset, load_ibl_dataset_locally
 from utils.utils import set_seed, move_batch_to_device, plot_gt_pred, metrics_list, plot_avg_rate_and_spike, \
     plot_rate_and_spike
 from utils.config_utils import config_from_kwargs, update_config
@@ -44,33 +44,96 @@ def load_model_data_local(**kwargs):
     eid = kwargs['eid']
     stitching = kwargs['stitching']
     num_sessions = kwargs['num_sessions']
+    just_spikes = kwargs['just_spikes']
+    data_type = kwargs['data_type']
+
+    train_aligned = False
+
+    # if data_type != "datasets":
+    #     train_aligned = False
+    # else:
+    #     train_aligned = True
+
+    print("\nload_model_data_local parameters: ")
+    for k, v in kwargs.items():
+        print(f"{k}: {v}")
+    print("mask mode: ", mask_mode)
+    print()
 
     # set seed
     set_seed(seed)
 
     # load the model
     config = config_from_kwargs({"model": f"include:{model_config}"})
-    config = update_config(model_config, config)
-    config = update_config(trainer_config, config)
-    config.model.encoder.masker.mode = mask_mode
+    config = update_config(model_config, config) # set config to ndt1_stitching_prompting_eval.yaml
+    config = update_config(trainer_config, config) # update trainer_ndt1.yaml with new config
+    config.model.encoder.masker.mode = mask_mode # confirm masking is mask_mode (default is all)
 
     accelerator = Accelerator()
 
-    _,_,_, meta_data = load_ibl_dataset(
-                            cache_dir=config.dirs.dataset_cache_dir,
-                            user_or_org_name=config.dirs.huggingface_org,
+    # _,_,_, meta_data = load_ibl_dataset(
+    #                         cache_dir=config.dirs.dataset_cache_dir,
+    #                         user_or_org_name=config.dirs.huggingface_org,
+    #                         num_sessions=1,
+    #                         split_method="predefined",
+    #                         test_session_eid=[],
+    #                         batch_size=config.training.train_batch_size,
+    #                         seed=seed,
+    #                         eid=eid
+    #                     )
+    
+    _,_,_, meta_data = load_ibl_dataset_locally(
                             num_sessions=1,
                             split_method="predefined",
                             test_session_eid=[],
                             batch_size=config.training.train_batch_size,
                             seed=seed,
-                            eid=eid
-                        )
+                            eid=eid,
+                            just_spikes=just_spikes,
+                            data_type=data_type)
+
     print(meta_data)
+    print()
 
     model_class = NAME2MODEL[config.model.model_class]
     model = model_class(config.model, **config.method.model_kwargs, **meta_data)    
     model = torch.load(model_path)['model']
+
+    # ### IF NO TRAINING ###
+    # ## MtM data ##
+    # checkpoint_state = torch.load(model_path, map_location='cpu')['model'].state_dict()
+    # model_state = model.state_dict()
+
+    # ## miv data ##
+    # checkpoint_state = torch.load(model_path, map_location='cpu')['model'].state_dict()
+    # checkpoint_state.pop("encoder.embedder.embed_session.weight", None)
+    # model_state = model.state_dict()
+
+    # use_model_count = 0
+    # use_random_count = 0
+    # random_keys = []
+
+    # new_state = {}
+    # for key in model_state.keys():
+    #     if key in checkpoint_state:
+    #         new_state[key] = checkpoint_state[key]  # use checkpoint weight
+    #         use_model_count += 1
+    #     else:
+    #         new_state[key] = model_state[key]       # use fresh weight
+    #         use_random_count += 1
+    #         random_keys.append(key)
+
+    # model.load_state_dict(new_state, strict=True)
+
+    # print("Loaded from model: ", use_model_count)
+    # print("Random load: ", use_random_count)
+    # print("Randomly initialized parameters:")
+    # for k in random_keys:
+    #     print("  ", k)
+    # print()
+
+    # ###
+    
 
     model.encoder.masker.mode = mask_mode
     model.encoder.masker.force_active = False
@@ -85,9 +148,37 @@ def load_model_data_local(**kwargs):
     model = accelerator.prepare(model)
 
     # load the dataset
-    dataset = load_dataset(f'ibl-foundation-model/{eid}_aligned', cache_dir=config.dirs.dataset_cache_dir)["test"]
+    if train_aligned:
+        dataset = load_dataset(f'ibl-foundation-model/{eid}_aligned', cache_dir=config.dirs.dataset_cache_dir)["test"]
+    else:
+        dir_path = os.path.join("/work/hdd/beml/ac136/", data_type, eid, "data")
+        dataset = load_dataset(
+            "parquet",
+            data_files={
+                "train": os.path.join(dir_path, "train.parquet"),
+                "validation": os.path.join(dir_path, "val.parquet"),
+                "test": os.path.join(dir_path, "test.parquet"),
+            }
+        )
+        dataset = dataset["test"]
 
-    n_neurons = len(dataset['cluster_regions'][0])
+    print("\nMax space length testing: ")
+
+    # clusters = dataset["spikes_sparse_indices"]
+    # all_ids = np.concatenate([np.array(a) for a in clusters])
+    # n_neurons_miv = len(np.unique(all_ids))
+    # print("n_neurons for miv data: ", n_neurons_miv)
+
+    print("n_neurons based on meta_data: ", meta_data["num_neurons"][0])
+
+    n_neurons = meta_data["num_neurons"][0]
+
+    # if data_type == "processed_miv":
+    #     clusters = dataset["spikes_sparse_indices"]
+    #     all_ids = np.concatenate([np.array(a) for a in clusters])
+    #     n_neurons = len(np.unique(all_ids))
+    # else:
+    #     n_neurons = len(dataset['cluster_regions'][0])
 
     if config.model.model_class in ["NDT1", "iTransformer"]:
         max_space_length = n_neurons  
@@ -98,6 +189,7 @@ def load_model_data_local(**kwargs):
 
     print('encoder max space length:', max_space_length)
 
+
     dataloader = make_loader(
         dataset,
         target=config.data.target,
@@ -107,7 +199,7 @@ def load_model_data_local(**kwargs):
         max_time_length=config.data.max_time_length,
         max_space_length=max_space_length,
         dataset_name=config.data.dataset_name,
-        load_meta=config.data.load_meta,
+        load_meta=False,
         shuffle=False,
     )
 
@@ -143,58 +235,107 @@ def co_smoothing_eval(
     is_aligned = kwargs['is_aligned']
     target_regions = kwargs['target_regions']
     n_jobs = kwargs['n_jobs']
+    data_type = kwargs['data_type']
+
+    print("\nCo-smoothing eval: ")
+    print("method name: ", method_name)
+    print("mode: ", mode)
+    print("is_aligned: ", is_aligned)
+    print("target regions: ", target_regions)
+    print("n_jobs: ", n_jobs)
+    print("data type: ", data_type)
+    print()
 
     # hack to accommodate NDT2 - fix later 
     if sum(batch['space_attn_mask'][0] == 0) == 0:
         tot_num_neurons = batch['space_attn_mask'].size()[-1]
     else:
         tot_num_neurons = (batch['space_attn_mask'][0] == 0).nonzero().min().item() 
-    uuids_list = np.array(test_dataset['cluster_uuids'][0])[:tot_num_neurons]
-    region_list = np.array(test_dataset['cluster_regions'])[0][:tot_num_neurons]
+    
+    print("\nCo-smoothing eval testing: ")
+    print("to_num_neurons: ", tot_num_neurons)
+
+    # clusters = test_dataset["spikes_sparse_indices"]
+    # all_ids = np.concatenate([np.array(a) for a in clusters])
+    # unique_neurons = np.unique(all_ids)
+    # print("unique neurons: ", unique_neurons)
+    # print(unique_neurons.shape)
+
+    # uuids_list_miv = unique_neurons[:tot_num_neurons]
+    # print("uuids list miv: ", uuids_list_miv)
+    # print(uuids_list_miv.shape)
+
+    ### processed miv doesn't have cluster uuids ###
+    uuids_list = [f"neuron_{i}" for i in range(tot_num_neurons)]
+    print("uuids list test: ", uuids_list)
+    print(len(uuids_list))
+    # if data_type == 'processed_miv':
+    #     clusters = test_dataset["spikes_sparse_indices"]
+    #     all_ids = np.concatenate([np.array(a) for a in clusters])
+    #     unique_neurons = np.unique(all_ids)
+    #     print("unique neurons: ", unique_neurons)
+    #     print(unique_neurons.shape)
+
+    #     uuids_list = unique_neurons[:tot_num_neurons]
+    #     # print("uuids list: ", uuids_list)
+    #     print(uuids_list.shape)
+    # else:
+    #     uuids_list = np.array(test_dataset['cluster_uuids'][0])[:tot_num_neurons]
+    #     # print("uuids list MtM: ", uuids_list)
+    #     print(uuids_list.shape)
+    #     # region_list = np.array(test_dataset['cluster_regions'])[0][:tot_num_neurons]
+    
+    ### GET RID OF REGION LIST/R2 STUFF ###
+    region_list = None
 
     T = kwargs['n_time_steps']
-    N = uuids_list.shape[0]
+    # N = uuids_list.shape[0]
+    N = len(uuids_list)
 
-    if is_aligned:
+    # if is_aligned:
         
-        # prepare the condition matrix
-        b_list = []
+    #     # prepare the condition matrix
+    #     b_list = []
     
-        # choice
-        choice = np.array(test_dataset['choice'])
-        choice = np.tile(np.reshape(choice, (choice.shape[0], 1)), (1, T))
-        b_list.append(choice)
+    #     # choice
+    #     choice = np.array(test_dataset['choice'])
+    #     choice = np.tile(np.reshape(choice, (choice.shape[0], 1)), (1, T))
+    #     b_list.append(choice)
     
-        # reward
-        reward = np.array(test_dataset['reward'])
-        reward = np.tile(np.reshape(reward, (reward.shape[0], 1)), (1, T))
-        b_list.append(reward)
+    #     # reward
+    #     reward = np.array(test_dataset['reward'])
+    #     reward = np.tile(np.reshape(reward, (reward.shape[0], 1)), (1, T))
+    #     b_list.append(reward)
     
-        # block
-        block = np.array(test_dataset['block'])
-        block = np.tile(np.reshape(block, (block.shape[0], 1)), (1, T))
-        b_list.append(block)
+    #     # block
+    #     block = np.array(test_dataset['block'])
+    #     block = np.tile(np.reshape(block, (block.shape[0], 1)), (1, T))
+    #     b_list.append(block)
     
-        behavior_set = np.stack(b_list, axis=-1)
+    #     behavior_set = np.stack(b_list, axis=-1)
     
-        var_name2idx = {'block': [2],
-                        'choice': [0],
-                        'reward': [1],
-                        'wheel': [3],
-                        }
-        var_value2label = {'block': {(0.2,): "p(left)=0.2",
-                                     (0.5,): "p(left)=0.5",
-                                     (0.8,): "p(left)=0.8", },
-                           'choice': {(-1.0,): "right",
-                                      (1.0,): "left"},
-                           'reward': {(0.,): "no reward",
-                                      (1.,): "reward", }}
-        var_tasklist = ['block', 'choice', 'reward']
-        var_behlist = []
+    #     var_name2idx = {'block': [2],
+    #                     'choice': [0],
+    #                     'reward': [1],
+    #                     'wheel': [3],
+    #                     }
+    #     var_value2label = {'block': {(0.2,): "p(left)=0.2",
+    #                                  (0.5,): "p(left)=0.5",
+    #                                  (0.8,): "p(left)=0.8", },
+    #                        'choice': {(-1.0,): "right",
+    #                                   (1.0,): "left"},
+    #                        'reward': {(0.,): "no reward",
+    #                                   (1.,): "reward", }}
+    #     var_tasklist = ['block', 'choice', 'reward']
+    #     var_behlist = []
 
     if mode == 'per_neuron':
         
         bps_result_list, r2_result_list = [float('nan')] * tot_num_neurons, [np.array([np.nan, np.nan])] * N
+
+        if region_list == None:
+                print("No R2")
+
         # loop through all the neurons
         counter = 0
         for n_i in tqdm(range(0, tot_num_neurons+n_jobs, n_jobs)):    
@@ -261,24 +402,28 @@ def co_smoothing_eval(
                     bps_result_list[n_i+i] = bps
         
                     # compute R2
-                    if is_aligned:
-                        X = behavior_set  # [#trials, #timesteps, #variables]
-                        _r2_psth, _r2_trial = viz_single_cell(X, gt_held_out.squeeze(), pred_held_out.squeeze(),
-                                                              var_name2idx, var_tasklist, var_value2label, var_behlist,
-                                                              subtract_psth=kwargs['subtract'],
-                                                              aligned_tbins=kwargs['onset_alignment'],
-                                                              neuron_idx=uuids_list[n_i+i][:4],
-                                                              neuron_region=region_list[n_i+i],
-                                                              method=method_name, save_path=kwargs['save_path'])
-                        r2_result_list[n_i+i] = np.array([_r2_psth, _r2_trial])
+                    ### do not compute R2 (spec for miv) ###
+                    if region_list == None:
+                        r2 = None
                     else:
-                        r2 = viz_single_cell_unaligned(
-                            gt_held_out.squeeze(), pred_held_out.squeeze(), 
-                            neuron_idx=uuids_list[n_i+i][:4],
-                            neuron_region=region_list[n_i+i],
-                            method=method_name, save_path=kwargs['save_path']
-                        )
-                        r2_result_list[n_i+i] = r2
+                        if is_aligned:
+                            # X = behavior_set  # [#trials, #timesteps, #variables]
+                            _r2_psth, _r2_trial = viz_single_cell(X, gt_held_out.squeeze(), pred_held_out.squeeze(),
+                                                                var_name2idx, var_tasklist, var_value2label, var_behlist,
+                                                                subtract_psth=kwargs['subtract'],
+                                                                aligned_tbins=kwargs['onset_alignment'],
+                                                                neuron_idx=uuids_list[n_i+i][:4],
+                                                                neuron_region=region_list[n_i+i],
+                                                                method=method_name, save_path=kwargs['save_path'])
+                            r2_result_list[n_i+i] = np.array([_r2_psth, _r2_trial])
+                        else:
+                            r2 = viz_single_cell_unaligned(
+                                gt_held_out.squeeze(), pred_held_out.squeeze(), 
+                                neuron_idx=uuids_list[n_i+i][:4],
+                                neuron_region=region_list[n_i+i],
+                                method=method_name, save_path=kwargs['save_path']
+                            )
+                            r2_result_list[n_i+i] = r2
                 else:
                     break
 
@@ -342,32 +487,36 @@ def co_smoothing_eval(
                     bps = np.nan
                 bps_result_list[target_neuron_idxs[n_i]] = bps
 
-            # compute R2
-            ys = gt_spikes[:, target_time_idxs]
-            y_preds = pred_spikes[:, target_time_idxs]
-    
-            # choose the neuron to plot
-            idxs = target_neuron_idxs
-    
-            for i in tqdm(range(idxs.shape[0]), desc='R2'):
-                if is_aligned:
-                    X = behavior_set[:, target_time_idxs, :]  # [#trials, #timesteps, #variables]
-                    _r2_psth, _r2_trial = viz_single_cell(X, ys[:, :, idxs[i]], y_preds[:, :, idxs[i]],
-                                                          var_name2idx, var_tasklist, var_value2label, var_behlist,
-                                                          subtract_psth=kwargs['subtract'],
-                                                          aligned_tbins=[],
-                                                          neuron_idx=uuids_list[idxs[i]][:4],
-                                                          neuron_region=region_list[idxs[i]],
-                                                          method=method_name, save_path=kwargs['save_path']);
-                    r2_result_list[idxs[i]] = np.array([_r2_psth, _r2_trial])
-                else:
-                    r2 = viz_single_cell_unaligned(
-                        ys[:, :, idxs[i]], y_preds[:, :, idxs[i]], 
-                        neuron_idx=uuids_list[idxs[i]][:4],
-                        neuron_region=region_list[idxs[i]],
-                        method=method_name, save_path=kwargs['save_path']
-                    )
-                    r2_result_list[idxs[i]] = r2
+            if region_list == None:
+                print("No R2")
+                r2 = None
+            else:
+                # compute R2
+                ys = gt_spikes[:, target_time_idxs]
+                y_preds = pred_spikes[:, target_time_idxs]
+        
+                # choose the neuron to plot
+                idxs = target_neuron_idxs
+        
+                for i in tqdm(range(idxs.shape[0]), desc='R2'):
+                    if is_aligned:
+                        X = behavior_set[:, target_time_idxs, :]  # [#trials, #timesteps, #variables]
+                        _r2_psth, _r2_trial = viz_single_cell(X, ys[:, :, idxs[i]], y_preds[:, :, idxs[i]],
+                                                            var_name2idx, var_tasklist, var_value2label, var_behlist,
+                                                            subtract_psth=kwargs['subtract'],
+                                                            aligned_tbins=[],
+                                                            neuron_idx=uuids_list[idxs[i]][:4],
+                                                            neuron_region=region_list[idxs[i]],
+                                                            method=method_name, save_path=kwargs['save_path']);
+                        r2_result_list[idxs[i]] = np.array([_r2_psth, _r2_trial])
+                    else:
+                        r2 = viz_single_cell_unaligned(
+                            ys[:, :, idxs[i]], y_preds[:, :, idxs[i]], 
+                            neuron_idx=uuids_list[idxs[i]][:4],
+                            neuron_region=region_list[idxs[i]],
+                            method=method_name, save_path=kwargs['save_path']
+                        )
+                        r2_result_list[idxs[i]] = r2
 
     elif mode == 'inter_region':
 
@@ -575,17 +724,26 @@ def co_smoothing_eval(
     np.save(os.path.join(kwargs['save_path'], f'bps.npy'), bps_all)
     
     # save R2
-    r2_all = np.array(r2_result_list)
-    np.save(os.path.join(kwargs['save_path'], f'r2.npy'), r2_all)
+    if data_type == "processed_miv":
+        print("No R2 final")
+        r2 = None
 
-    return {
-        f"{mode}_mean_bps": bps_mean,
-        f"{mode}_std_bps": bps_std,
-        f"{mode}_mean_r2_psth": np.nanmean(r2_all[:, 0]),
-        f"{mode}_std_r2_psth": np.nanstd(r2_all[:, 0]),
-        f"{mode}_mean_r2_trial": np.nanmean(r2_all[:, 1]),
-        f"{mode}_std_r2_trial": np.nanstd(r2_all[:, 1])
-    }
+        return {
+            f"{mode}_mean_bps": bps_mean,
+            f"{mode}_std_bps": bps_std,
+        }
+    else:
+        r2_all = np.array(r2_result_list)
+        np.save(os.path.join(kwargs['save_path'], f'r2.npy'), r2_all)
+
+        return {
+            f"{mode}_mean_bps": bps_mean,
+            f"{mode}_std_bps": bps_std,
+            f"{mode}_mean_r2_psth": np.nanmean(r2_all[:, 0]),
+            f"{mode}_std_r2_psth": np.nanstd(r2_all[:, 0]),
+            f"{mode}_mean_r2_trial": np.nanmean(r2_all[:, 1]),
+            f"{mode}_std_r2_trial": np.nanstd(r2_all[:, 1])
+        }
 
 
 def draw_threshold_table(
@@ -723,8 +881,7 @@ def behavior_decoding(**kwargs):
                         test_session_eid=[],
                         batch_size=config.training.train_batch_size,
                         seed=seed,
-                        eid=eid
-                    )
+                        eid=eid)
     print(meta_data)
     log_dir = os.path.join(
             config.dirs.log_dir, 
@@ -1509,6 +1666,27 @@ def viz_single_cell_unaligned(
         
         plt.savefig(os.path.join(save_path, f"{neuron_region.replace('/', '-')}_{neuron_idx}_{r2:.2f}_{method}.png"))
         plt.tight_layout()
+
+        n_trials = y.shape[0]
+
+        fig, axes = plt.subplots(n_trials, 1, figsize=(8, 2 * n_trials), sharex=True)
+        if n_trials == 1:
+            axes = [axes]  # make iterable if only one trial
+
+        for i in range(n_trials):
+            axes[i].plot(y[i], label="obs.", color="black", lw=1.2)
+            axes[i].plot(y_pred[i], label="pred.", color="red", lw=1.0)
+            axes[i].plot(y_resid[i], label="resid.", color="blue", lw=0.8, linestyle="--")
+
+            axes[i].set_ylabel(f"Trial {i+1}")
+            axes[i].spines[['top','right']].set_visible(False)
+
+        axes[-1].set_xlabel("Time bins")
+        axes[0].set_title(f"Neuron {neuron_region} {neuron_idx} | R²={r2:.3f}")
+        axes[0].legend(frameon=False, loc="upper right")
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, f"{neuron_region.replace('/', '-')}_{neuron_idx}_{r2:.2f}_{method}_trials.png"))
 
     return r2
 

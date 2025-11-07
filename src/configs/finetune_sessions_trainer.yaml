@@ -23,6 +23,19 @@ dirs:
   dataset_dir: ibl-foundation-model/671c7ea7-6726-4fbe-adeb-f89c2c8e489b
   behav_dir:  671c7ea7-6726-4fbe-adeb-f89c2c8e489b
   huggingface_org: ibl-foundation-model
+
+# # Logging directories for delta
+# dirs:
+#   checkpoint_dir: /work/hdd/beml/ac136/checkpoints  # save model state dicts (todo optimizer states)
+#   log_dir: /work/hdd/beml/ac136/results  # save tensorboard logs
+#   dataset_cache_dir: /work/hdd/beml/ac136/checkpoints/datasets_cache  # save dataset cache
+#   # dataset_dir: /home/ppwang/neural-data-transformers/data/lfads_lorenz.h5
+#   # pretrained_model_path: checkpoints/models/ndt1/ssl/temporal/model_best_multi-session.pt
+#   # dataset_dir: /work/hdd/beml/ac136/ibl-foundation-model/671c7ea7-6726-4fbe-adeb-f89c2c8e489b
+#   # behav_dir:  /work/hdd/beml/ac136/671c7ea7-6726-4fbe-adeb-f89c2c8e489b
+#   dataset_dir: ibl-foundation-model/671c7ea7-6726-4fbe-adeb-f89c2c8e489b
+#   behav_dir:  671c7ea7-6726-4fbe-adeb-f89c2c8e489b
+#   huggingface_org: ibl-foundation-model
   
 
 

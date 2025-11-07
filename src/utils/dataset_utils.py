@@ -42,7 +42,16 @@ def get_binned_spikes_from_sparse(spikes_sparse_data_list, spikes_sparse_indices
 
     return binned_spikes
 
-def create_dataset(binned_spikes, bwm_df, eid, params, meta_data=None, binned_behaviors=None):
+import uuid
+def convert_uuids_to_str(data_dict):
+    for key, value in data_dict.items():
+        if isinstance(value, list):
+            data_dict[key] = [str(v) if isinstance(v, uuid.UUID) else v for v in value]
+        elif isinstance(value, uuid.UUID):
+            data_dict[key] = str(value)
+    return data_dict
+
+def create_dataset(binned_spikes, bwm_df, eid, params, meta_data=None, binned_behaviors=None, just_spikes=False):
 
     # Scipy sparse matrices can't be directly loaded into HuggingFace Datasets so they are converted to lists
     sparse_binned_spikes, spikes_sparse_data_list, spikes_sparse_indices_list, spikes_sparse_indptr_list, spikes_sparse_shape_list = get_sparse_from_binned_spikes(binned_spikes)
@@ -53,6 +62,12 @@ def create_dataset(binned_spikes, bwm_df, eid, params, meta_data=None, binned_be
         'spikes_sparse_indptr': spikes_sparse_indptr_list,
         'spikes_sparse_shape': spikes_sparse_shape_list,
     }
+
+    if just_spikes:
+        just_spikes_dict = {
+            'eid': [eid] * len(sparse_binned_spikes)
+        }
+        data_dict.update(just_spikes_dict)
     
     if binned_behaviors is not None:
         # Store choice behaviors more efficiently (save this option for later)
@@ -76,6 +91,8 @@ def create_dataset(binned_spikes, bwm_df, eid, params, meta_data=None, binned_be
             'cluster_qc': [meta_data['cluster_qc']] * len(sparse_binned_spikes),
         }
         data_dict.update(meta_dict)
+
+    data_dict = convert_uuids_to_str(data_dict)
 
     return Dataset.from_dict(data_dict)
 
@@ -101,7 +118,7 @@ def get_data_from_h5(mode, filepath, config):
     NLB_KEY = 'spikes' # curiously, old code thought NLB data keys came as "train_data_heldin" and not "train_spikes_heldin"
     NLB_KEY_ALT = 'data'
 
-    with h5py.File(filepath, 'r') as h5file:
+    with h5py.Fit_loade(filepath, 'r') as h5file:
         h5dict = {key: h5file[key][()] for key in h5file.keys()}
         if f'eval_{NLB_KEY}_heldin' not in h5dict: # double check
             if f'eval_{NLB_KEY_ALT}_heldin' in h5dict:
@@ -159,12 +176,134 @@ def get_data_from_h5(mode, filepath, config):
 def get_user_datasets(user_or_org_name):
     all_datasets = list_datasets()
     user_datasets = [d for d in all_datasets if d.startswith(f"{user_or_org_name}/")]
-    return user_datasets
+    return user_datasets # list of dataset names
 
-def load_ibl_dataset(cache_dir,
-                     user_or_org_name='ibl-foundation-model',
-                     aligned_data_dir=None,
+def test_load_ibl_dataset(
+                     aligned_data_dir=True,
+                     eid=None, # specify 1 session for training, random_split will be used
+                     batch_size=1,
+                     seed=42):
+
+    print("\nload_ibl_dataset parameters: ")
+    print(f"aligned_data_dir: ", aligned_data_dir)
+    print(f"eid: ", eid)
+    print(f"batch: ", batch_size)
+    print(f"seed: ", seed)
+    print()
+
+    if aligned_data_dir:
+        # ### For og data ###
+        # aligned_data_dir_path = os.path.join("/work/hdd/beml/ac136/datasets", eid, "data")
+
+        # # dataset = load_from_disk(aligned_data_dir_path)
+        # dataset = load_dataset(
+        #     "parquet",
+        #     data_files={
+        #         "train": os.path.join(aligned_data_dir_path, "train-00000-of-00001.parquet"),
+        #         "validation": os.path.join(aligned_data_dir_path, "val-00000-of-00001.parquet"),
+        #         "test": os.path.join(aligned_data_dir_path, "test-00000-of-00001.parquet"),
+        #     }
+        # )
+
+        aligned_data_dir_path = os.path.join("/work/hdd/beml/ac136/processed_miv", eid, "data")
+
+        dataset = load_dataset(
+            "parquet",
+            data_files={
+                "train": os.path.join(aligned_data_dir_path, "train.parquet"),
+                "validation": os.path.join(aligned_data_dir_path, "val.parquet"),
+                "test": os.path.join(aligned_data_dir_path, "test.parquet"),
+            }
+        )
+
+        ### GET META DATA ###
+        print("Loading train dataset sessions for predefined train/val/test split...")
+        
+        session_train_datasets = []
+        session_val_datasets = []
+        session_test_datasets = []
+
+        num_neuron_set = set()
+        # eids_set = set()
+        # target_eids = get_target_eids()
+        # test_re_eids = get_test_re_eids()
+        
+        # session_dataset = load_dataset(dataset_eid, cache_dir=cache_dir)
+        session_dataset = dataset
+        train_trials = len(session_dataset["train"]["spikes_sparse_data"])
+        train_trials = train_trials - train_trials % batch_size
+        session_train_datasets.append(session_dataset["train"].select(list(range(train_trials))))
+
+        val_trials = len(session_dataset["validation"]["spikes_sparse_data"])
+        val_trials = val_trials - val_trials % batch_size
+        session_val_datasets.append(session_dataset["validation"].select(list(range(val_trials))))
+
+        test_trials = len(session_dataset["test"]["spikes_sparse_data"])
+        test_trials = test_trials - test_trials % batch_size
+        session_test_datasets.append(session_dataset["test"].select(list(range(test_trials))))
+        
+        binned_spikes_data = get_binned_spikes_from_sparse([session_dataset["train"]["spikes_sparse_data"][0]], 
+                                                            [session_dataset["train"]["spikes_sparse_indices"][0]],
+                                                            [session_dataset["train"]["spikes_sparse_indptr"][0]],
+                                                            [session_dataset["train"]["spikes_sparse_shape"][0]])
+
+        num_neuron_set.add(binned_spikes_data.shape[2])
+        # eids_set.add(eid)
+
+        print("session eid used: ", eid)
+
+        train_dataset = concatenate_datasets(session_train_datasets)
+        val_dataset = concatenate_datasets(session_val_datasets)
+        test_dataset = concatenate_datasets(session_test_datasets)
+        print("Train dataset size: ", len(train_dataset))
+        print("Val dataset size: ", len(val_dataset))
+        print("Test dataset size: ", len(test_dataset))
+
+        num_neuron_set = list(num_neuron_set)
+        print("num neurons: ", num_neuron_set)
+
+        # final_dataset  = concatenate_datasets([train_dataset, val_dataset, test_dataset])
+
+        
+        # meta_data = {
+        #     "num_neurons": num_neuron_set,
+        #     "num_sessions": len(eids_set),
+        #     "eids": eids_set
+        # }
+
+        return train_dataset, val_dataset, test_dataset
+    
+def load_locally(data_path, data_type, eid):
+    aligned_data_dir_path = os.path.join(data_path, eid, "data")
+
+    if data_type == "dataset":
+        dataset = load_dataset(
+            "parquet",
+            data_files={
+                "train": os.path.join(aligned_data_dir_path, "train-00000-of-00001.parquet"),
+                "val": os.path.join(aligned_data_dir_path, "val-00000-of-00001.parquet"),
+                "test": os.path.join(aligned_data_dir_path, "test-00000-of-00001.parquet"),
+            }
+        )
+    else:
+        dataset = load_dataset(
+            "parquet",
+            data_files={
+                "train": os.path.join(aligned_data_dir_path, "train.parquet"),
+                "val": os.path.join(aligned_data_dir_path, "val.parquet"),
+                "test": os.path.join(aligned_data_dir_path, "test.parquet"),
+            }
+        )
+    
+    print("Load locally path: ", aligned_data_dir_path)
+
+    return dataset
+
+
+def load_ibl_dataset_locally(
                      train_aligned=True,
+                     data_type = "just_spikes",
+                     just_spikes = True,
                      eid=None, # specify 1 session for training, random_split will be used
                      num_sessions=5, # total number of sessions for training and testing
                      split_method="session_based",
@@ -175,15 +314,380 @@ def load_ibl_dataset(cache_dir,
                      batch_size=16,
                      use_re=False,
                      seed=42):
-    if aligned_data_dir:
-        dataset = load_from_disk(aligned_data_dir)
+
+    print("\nload_ibl_dataset_locally parameters: ")
+    
+    print(f"data_type: ", data_type)
+    print(f"just_spikes: ", just_spikes)
+    print(f"eid: ", eid)
+    print(f"num_sessions: ", num_sessions)
+    print(f"split_method: ", split_method)
+    print(f"train_session_eid: ", train_session_eid)
+    print(f"test_session_eid: ", test_session_eid)
+    print(f"split_size: ", split_size)
+    print(f"mode: ", mode)
+    print(f"batch_size: ", batch_size)
+    print(f"use_re: ", use_re)
+    print(f"seed: ", seed)
+
+    ### HANDLE DIFF DATASET LOADING BETWEEN SPIKES ONLY AND OG DATASETS ###
+    data_path = os.path.join("/work/hdd/beml/ac136/", data_type)
+
+    # if data_type == "processed_miv":
+    #     train_aligned = False
+
+    train_aligned = False
+
+    print(f"train_aligned: {train_aligned}")  
+    print(f"data_path: {data_path}")
+    print()
+
+    if mode == "eval":
+        if train_aligned:
+            eid = eid + "_aligned"
+
+        dataset = load_locally(data_path=data_path, data_type=data_type, eid=eid)
+
         # if dataset does not have a 'train' key, it is a single session dataset
         if "train" not in dataset:
             _dataset = dataset.train_test_split(test_size=0.2, seed=seed)
             _dataset_train, _dataset_test = _dataset["train"], _dataset["test"]
             dataset = _dataset_train.train_test_split(test_size=0.1, seed=seed)
             return dataset["train"], dataset["test"], _dataset_test
-        return dataset["train"], dataset["val"], dataset["test"]
+        
+        ### GET META DATA ###
+        print("Loading train dataset sessions for EVAL and PREDEFINED train/val/test split...")
+
+        session_train_datasets = []
+        session_val_datasets = []
+        session_test_datasets = []
+
+        num_neuron_set = set()
+        eids_set = set()
+        target_eids = get_target_eids()
+        test_re_eids = get_test_re_eids()
+        
+        # session_dataset = load_dataset(dataset_eid, cache_dir=cache_dir)
+        session_dataset = dataset
+        train_trials = len(session_dataset["train"]["spikes_sparse_data"])
+        train_trials = train_trials - train_trials % batch_size
+        session_train_datasets.append(session_dataset["train"].select(list(range(train_trials))))
+
+        val_trials = len(session_dataset["val"]["spikes_sparse_data"])
+        val_trials = val_trials - val_trials % batch_size
+        session_val_datasets.append(session_dataset["val"].select(list(range(val_trials))))
+
+        test_trials = len(session_dataset["test"]["spikes_sparse_data"])
+        test_trials = test_trials - test_trials % batch_size
+        session_test_datasets.append(session_dataset["test"].select(list(range(test_trials))))
+        binned_spikes_data = get_binned_spikes_from_sparse([session_dataset["train"]["spikes_sparse_data"][0]], 
+                                                            [session_dataset["train"]["spikes_sparse_indices"][0]],
+                                                            [session_dataset["train"]["spikes_sparse_indptr"][0]],
+                                                            [session_dataset["train"]["spikes_sparse_shape"][0]])
+
+        num_neuron_set.add(binned_spikes_data.shape[2])
+        # eid_prefix = dataset_eid.split('_')[0] if train_aligned else dataset_eid
+        # eid_prefix = eid_prefix.split('/')[1]
+        eids_set.add(eid)
+
+        print("session eid used: ", eids_set)
+        print("Total number of session: ", len(eids_set))
+        train_dataset = concatenate_datasets(session_train_datasets)
+        val_dataset = concatenate_datasets(session_val_datasets)
+        test_dataset = concatenate_datasets(session_test_datasets)
+        print("Train dataset size: ", len(train_dataset))
+        print("Val dataset size: ", len(val_dataset))
+        print("Test dataset size: ", len(test_dataset))
+        print("Data type: ", data_type)
+
+        num_neuron_set = list(num_neuron_set)
+        meta_data = {
+            "num_neurons": num_neuron_set,
+            "num_sessions": len(eids_set),
+            "eids": eids_set, # necessary for training
+            "just_spikes": just_spikes # exclude inter and intra region
+        }
+
+        return train_dataset, val_dataset, test_dataset, meta_data
+
+    dataset_name_list = os.listdir(data_path)
+
+    print("Total session-wise datasets found: ", len(dataset_name_list))
+    print("Eid is none test: ", eid)
+
+    test_session_eid_dir = []
+    train_session_eid_dir = []
+    if eid is not None: # eval only
+        if train_aligned:
+            eid_dir = eid+"_aligned"
+        else:
+            eid_dir = eid
+        
+        if eid_dir not in dataset_name_list:
+            raise ValueError(f"Dataset with eid_dir: {eid_dir} not found in the user's datasets")
+        else:
+            train_session_eid_dir = [eid_dir]
+            user_datasets = [eid_dir]
+
+
+    if len(test_session_eid) > 0:
+        test_session_eid_dir = [os.path.join(data_path, eid) for eid in test_session_eid]
+        print("Test session-wise datasets found: ", len(test_session_eid_dir))
+        train_session_eid_dir = [eid for eid in user_datasets if eid not in test_session_eid_dir]
+        print("Train session-wise datasets found: ", len(train_session_eid_dir))
+        if train_aligned:
+            train_session_eid_dir = [eid for eid in train_session_eid_dir if "aligned" in eid]
+        else:
+            train_session_eid_dir = [eid for eid in train_session_eid_dir if "aligned" not in eid]
+        train_session_eid_dir = train_session_eid_dir[:num_sessions - len(test_session_eid)]
+        print("Number of training sesssion datasets to be used: ", len(train_session_eid_dir))
+    else:
+        if len(train_session_eid) > 0:
+            if train_aligned:
+                train_session_eid_dir = [os.path.join(data_path, eid+'_aligned') for eid in train_session_eid]
+            else:
+                train_session_eid_dir = [os.path.join(data_path, eid) for eid in train_session_eid]
+            print("reached first check")
+            print(train_session_eid_dir)
+        else:
+            train_session_eid_dir = user_datasets
+            
+        if train_aligned:
+            train_session_eid_dir = [eid for eid in train_session_eid_dir if "aligned" in eid]
+            print("reached train_aligned")
+            print(train_session_eid_dir)
+            print()
+        else:
+            train_session_eid_dir = [eid for eid in train_session_eid_dir if "aligned" not in eid]
+    assert len(train_session_eid_dir) > 0, "No training datasets found"
+    assert not (len(test_session_eid) > 0 and split_method == "random_split"), "When you have a test session, the split method should be 'session_based'"
+
+    all_sessions_datasets = []
+    
+    if split_method == 'random_split':
+        print("Loading datasets...")
+        for dataset_eid in tqdm(train_session_eid_dir[:num_sessions]):
+            # session_dataset = load_dataset(dataset_eid, cache_dir=cache_dir)["train"]
+            session_dataset = load_locally(data_path=data_path, data_type=data_type, eid=dataset_eid)["train"]
+            all_sessions_datasets.append(session_dataset)
+        all_sessions_datasets = concatenate_datasets(all_sessions_datasets)
+        # split the dataset to train and test
+        dataset = all_sessions_datasets.train_test_split(test_size=split_size, seed=seed)
+        train_dataset = dataset["train"]
+        test_dataset = dataset["test"]
+    elif split_method == 'predefined':
+        print("Loading train dataset sessions for TRAINING and PREDEFINED train/val/test split...")
+        session_train_datasets = []
+        session_val_datasets = []
+        session_test_datasets = []
+
+        num_neuron_set = set()
+        eids_set = set()
+        target_eids = get_target_eids()
+        test_re_eids = get_test_re_eids()
+        if use_re:
+            train_session_eid_dir = [eid for eid in train_session_eid_dir if eid.split('_')[0].split('/')[1] in target_eids]
+            # remove the test_re_eids from the train_session_eid_dir
+            train_session_eid_dir = [eid for eid in train_session_eid_dir if eid.split('_')[0].split('/')[1] not in test_re_eids]
+        for dataset_eid in tqdm(train_session_eid_dir[:num_sessions]):
+            try:
+                print("Dataset id: ", dataset_eid)
+                dataset_eid = dataset_eid.split('/')[-1]
+                print("Dataset id: ", dataset_eid)
+                
+                session_dataset = load_locally(data_path=data_path, data_type=data_type, eid=dataset_eid)
+
+                print("Results of load_locally: ", session_dataset)
+
+                train_trials = len(session_dataset["train"]["spikes_sparse_data"])
+                train_trials = train_trials - train_trials % batch_size
+                session_train_datasets.append(session_dataset["train"].select(list(range(train_trials))))
+
+                val_trials = len(session_dataset["val"]["spikes_sparse_data"])
+                val_trials = val_trials - val_trials % batch_size
+                session_val_datasets.append(session_dataset["val"].select(list(range(val_trials))))
+
+                test_trials = len(session_dataset["test"]["spikes_sparse_data"])
+                test_trials = test_trials - test_trials % batch_size
+                session_test_datasets.append(session_dataset["test"].select(list(range(test_trials))))
+
+                binned_spikes_data = get_binned_spikes_from_sparse([session_dataset["train"]["spikes_sparse_data"][0]], 
+                                                                    [session_dataset["train"]["spikes_sparse_indices"][0]],
+                                                                    [session_dataset["train"]["spikes_sparse_indptr"][0]],
+                                                                    [session_dataset["train"]["spikes_sparse_shape"][0]])
+                
+                # print("Binned spikes data: ")
+                # print(binned_spikes_data)
+                # print(binned_spikes_data.shape)
+
+                num_neuron_set.add(binned_spikes_data.shape[2])
+
+                eid_prefix = dataset_eid.split('_')[0] if train_aligned else dataset_eid
+                # print("eid_prefix: ", eid_prefix)
+
+                # eid_prefix = eid_prefix.split('/')[1]
+                # print("eid_prefix: ", eid_prefix)
+                eids_set.add(eid_prefix)
+            except Exception as e:
+                print("Error loading dataset: ", dataset_eid)
+                print(e)
+                continue
+        print("session eid used: ", eids_set)
+        print("Total number of session: ", len(eids_set))
+        train_dataset = concatenate_datasets(session_train_datasets)
+        val_dataset = concatenate_datasets(session_val_datasets)
+        test_dataset = concatenate_datasets(session_test_datasets)
+        print("Train dataset size: ", len(train_dataset))
+        print("Val dataset size: ", len(val_dataset))
+        print("Test dataset size: ", len(test_dataset))
+        print("Just spikes: ", just_spikes)
+
+        num_neuron_set = list(num_neuron_set)
+        meta_data = {
+            "num_neurons": num_neuron_set,
+            "num_sessions": len(eids_set),
+            "eids": eids_set, # necessary for training
+            "just_spikes": just_spikes # exclude inter and intra region
+        }
+    elif split_method == 'session_based':
+        print("Loading train dataset sessions...")
+        for dataset_eid in tqdm(train_session_eid_dir):
+            session_dataset = load_locally(just_spikes=just_spikes, eid=dataset_eid)["train"]
+            all_sessions_datasets.append(session_dataset)
+        train_dataset = concatenate_datasets(all_sessions_datasets)
+
+        print("Loading test dataset session...")
+        all_sessions_datasets = []
+        for dataset_eid in tqdm(test_session_eid_dir):
+            session_dataset = load_locally(just_spikes=just_spikes, eid=dataset_eid)["train"]
+            all_sessions_datasets.append(session_dataset)
+        test_dataset = concatenate_datasets(all_sessions_datasets)
+        
+        train_dataset = train_dataset
+        test_dataset = test_dataset
+    else:
+        raise ValueError("Invalid split method. Please choose either 'random_split' or 'session_based'")
+    
+    return train_dataset, val_dataset, test_dataset, meta_data
+
+
+def load_ibl_dataset(cache_dir,
+                     user_or_org_name='ibl-foundation-model',
+                     aligned_data_dir=True,
+                     train_aligned=True,
+                     just_spikes = False,
+                     eid=None, # specify 1 session for training, random_split will be used
+                     num_sessions=5, # total number of sessions for training and testing
+                     split_method="session_based",
+                     train_session_eid=[],
+                     test_session_eid=[], # specify session eids for testing, session_based will be used
+                     split_size = 0.1,
+                     mode = "train",
+                     batch_size=16,
+                     use_re=False,
+                     seed=42):
+
+    print("\nload_ibl_dataset parameters: ")
+    print(f"cache_dir: ", cache_dir)
+    print(f"user_or_org_name: ", user_or_org_name)
+    print(f"aligned_data_dir: ", aligned_data_dir)
+    print(f"train_aligned: ", train_aligned)
+    print(f"just_spikes: ", just_spikes)
+    print(f"eid: ", eid)
+    print(f"num_sessions: ", num_sessions)
+    print(f"split_method: ", split_method)
+    print(f"train_session_eid: ", train_session_eid)
+    print(f"test_session_eid: ", test_session_eid)
+    print(f"split_size: ", split_size)
+    print(f"mode: ", mode)
+    print(f"batch_size: ", batch_size)
+    print(f"use_re: ", use_re)
+    print(f"seed: ", seed)
+    print()
+
+    if aligned_data_dir:
+        if just_spikes:
+            aligned_data_dir_path = os.path.join("/work/hdd/beml/ac136/just_spikes", eid+"_aligned", "data")
+
+            dataset = load_dataset(
+                "parquet",
+                data_files={
+                    "train": os.path.join(aligned_data_dir_path, "train.parquet"),
+                    "validation": os.path.join(aligned_data_dir_path, "val.parquet"),
+                    "test": os.path.join(aligned_data_dir_path, "test.parquet"),
+                }
+            )
+        else:
+            aligned_data_dir_path = os.path.join("/work/hdd/beml/ac136/datasets", eid+"_aligned", "data")
+
+            # dataset = load_from_disk(aligned_data_dir_path)
+            dataset = load_dataset(
+                "parquet",
+                data_files={
+                    "train": os.path.join(aligned_data_dir_path, "train-00000-of-00001.parquet"),
+                    "validation": os.path.join(aligned_data_dir_path, "val-00000-of-00001.parquet"),
+                    "test": os.path.join(aligned_data_dir_path, "test-00000-of-00001.parquet"),
+                }
+            )
+
+        # if dataset does not have a 'train' key, it is a single session dataset
+        if "train" not in dataset:
+            _dataset = dataset.train_test_split(test_size=0.2, seed=seed)
+            _dataset_train, _dataset_test = _dataset["train"], _dataset["test"]
+            dataset = _dataset_train.train_test_split(test_size=0.1, seed=seed)
+            return dataset["train"], dataset["test"], _dataset_test
+        
+        ### GET META DATA ###
+        print("Loading train dataset sessions for predefined train/val/test split...")
+        
+        session_train_datasets = []
+        session_val_datasets = []
+        session_test_datasets = []
+
+        num_neuron_set = set()
+        eids_set = set()
+        target_eids = get_target_eids()
+        test_re_eids = get_test_re_eids()
+        
+        # session_dataset = load_dataset(dataset_eid, cache_dir=cache_dir)
+        session_dataset = dataset
+        train_trials = len(session_dataset["train"]["spikes_sparse_data"])
+        train_trials = train_trials - train_trials % batch_size
+        session_train_datasets.append(session_dataset["train"].select(list(range(train_trials))))
+
+        val_trials = len(session_dataset["validation"]["spikes_sparse_data"])
+        val_trials = val_trials - val_trials % batch_size
+        session_val_datasets.append(session_dataset["validation"].select(list(range(val_trials))))
+
+        test_trials = len(session_dataset["test"]["spikes_sparse_data"])
+        test_trials = test_trials - test_trials % batch_size
+        session_test_datasets.append(session_dataset["test"].select(list(range(test_trials))))
+        binned_spikes_data = get_binned_spikes_from_sparse([session_dataset["train"]["spikes_sparse_data"][0]], 
+                                                            [session_dataset["train"]["spikes_sparse_indices"][0]],
+                                                            [session_dataset["train"]["spikes_sparse_indptr"][0]],
+                                                            [session_dataset["train"]["spikes_sparse_shape"][0]])
+
+        num_neuron_set.add(binned_spikes_data.shape[2])
+        # eid_prefix = dataset_eid.split('_')[0] if train_aligned else dataset_eid
+        # eid_prefix = eid_prefix.split('/')[1]
+        eids_set.add(eid)
+
+        print("session eid used: ", eids_set)
+        print("Total number of session: ", len(eids_set))
+        train_dataset = concatenate_datasets(session_train_datasets)
+        val_dataset = concatenate_datasets(session_val_datasets)
+        test_dataset = concatenate_datasets(session_test_datasets)
+        print("Train dataset size: ", len(train_dataset))
+        print("Val dataset size: ", len(val_dataset))
+        print("Test dataset size: ", len(test_dataset))
+        num_neuron_set = list(num_neuron_set)
+        meta_data = {
+            "num_neurons": num_neuron_set,
+            "num_sessions": len(eids_set),
+            "eids": eids_set
+        }
+
+        return train_dataset, val_dataset, test_dataset, meta_data
     
     user_datasets = get_user_datasets(user_or_org_name)
     print("Total session-wise datasets found: ", len(user_datasets))
@@ -291,11 +795,13 @@ def load_ibl_dataset(cache_dir,
         print("Train dataset size: ", len(train_dataset))
         print("Val dataset size: ", len(val_dataset))
         print("Test dataset size: ", len(test_dataset))
+
         num_neuron_set = list(num_neuron_set)
         meta_data = {
             "num_neurons": num_neuron_set,
             "num_sessions": len(eids_set),
-            "eids": eids_set
+            "eids": eids_set, # necessary for training
+            "just_spikes": just_spikes # exclude inter and intra region
         }
     elif split_method == 'session_based':
         print("Loading train dataset sessions...")

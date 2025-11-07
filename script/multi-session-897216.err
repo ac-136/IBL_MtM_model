@@ -1,0 +1,30 @@
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:01<00:00,  1.05s/it]100%|██████████| 1/1 [00:01<00:00,  1.05s/it]
+  0%|          | 0/36 [00:00<?, ?it/s]  3%|▎         | 1/36 [00:00<00:24,  1.40it/s]  6%|▌         | 2/36 [00:00<00:15,  2.25it/s]
+Traceback (most recent call last):
+  File "/projects/beml/ac136/IBL_MtM_model/src/finetune_eval_multi_session_just_spikes.py", line 219, in <module>
+    trainer.train()
+  File "/projects/beml/ac136/IBL_MtM_model/src/trainer/base.py", line 60, in train
+    train_epoch_results = self.train_epoch(epoch)
+  File "/projects/beml/ac136/IBL_MtM_model/src/trainer/base.py", line 153, in train_epoch
+    outputs = self._forward_model_outputs(batch, masking_mode)
+  File "/projects/beml/ac136/IBL_MtM_model/src/trainer/base.py", line 167, in _forward_model_outputs
+    return self.model(
+  File "/u/ac136/.conda/envs/og_base/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/u/ac136/.conda/envs/og_base/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/projects/beml/ac136/IBL_MtM_model/src/models/ndt1.py", line 726, in forward
+    x, new_mask = self.encoder(spikes, time_attn_mask, spikes_timestamps, block_idx, date_idx, neuron_regions, masking_mode, eval_mask, num_neuron, eid)
+  File "/u/ac136/.conda/envs/og_base/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/u/ac136/.conda/envs/og_base/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/projects/beml/ac136/IBL_MtM_model/src/models/ndt1.py", line 494, in forward
+    spikes, targets_mask = self.masker(spikes, neuron_regions)
+  File "/u/ac136/.conda/envs/og_base/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/u/ac136/.conda/envs/og_base/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/projects/beml/ac136/IBL_MtM_model/src/models/masker.py", line 115, in forward
+    mask_probs[region_indx] = mask_ratio
+IndexError: The shape of the mask [16, 1] at index 1 does not match the shape of the indexed tensor [16, 274] at index 1

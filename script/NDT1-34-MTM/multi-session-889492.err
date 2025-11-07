@@ -1,0 +1,9 @@
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:02<00:00,  2.90s/it]100%|██████████| 1/1 [00:02<00:00,  2.90s/it]
+Traceback (most recent call last):
+  File "/projects/beml/ac136/IBL_MtM_model/src/finetune_eval_multi_session.py", line 183, in <module>
+    model.load_state_dict(torch.load(pretrain_model_path)['model'].state_dict(), strict=False)
+  File "/u/ac136/.conda/envs/og_base/lib/python3.10/site-packages/torch/serialization.py", line 1229, in load
+    with _open_zipfile_reader(opened_file) as opened_zipfile:
+  File "/u/ac136/.conda/envs/og_base/lib/python3.10/site-packages/torch/serialization.py", line 600, in __init__
+    super().__init__(torch._C.PyTorchFileReader(name_or_buffer))
+RuntimeError: PytorchStreamReader failed reading zip archive: failed finding central directory

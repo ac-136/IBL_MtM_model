@@ -17,7 +17,10 @@ from models.masker import Masker
 
 DEFAULT_CONFIG = "src/configs/ndt1.yaml"
 
-with open('data/target_eids.txt') as file:
+# with open('data/target_eids.txt') as file:
+#     include_eids = [line.rstrip() for line in file]
+
+with open('data/spike_eids.txt') as file:
     include_eids = [line.rstrip() for line in file]
 
 @dataclass
@@ -498,6 +501,10 @@ class NeuralEncoder(nn.Module):
 
         if eval_mask is not None:
             targets_mask = eval_mask.clone()
+
+        # print("Forward pass: ")
+        # print(list(self.stitcher.stitcher_dict.keys()))
+        # print()
         
         # stitcher
         if hasattr(self, 'stitcher'):
@@ -535,13 +542,22 @@ class NeuralStitcher(nn.Module):
                  num_neurons:list,
                  n_channels:int,):
         super().__init__()
+        # print()
+        # print("Stitcher dict instantiation: ")
+        # print(f"num_neurons: {num_neurons}, n_channels: {n_channels}")
 
         stitcher_dict = {}
         for num_neuron in num_neurons:
             stitcher_dict[str(num_neuron)] = nn.Linear(num_neuron, n_channels)
         self.stitcher_dict = nn.ModuleDict(stitcher_dict)
 
+        # print("End of instantiation: ", list(self.stitcher_dict.keys()))
+
     def forward(self, x, block_idx):
+        # print("Neural Stitcher check")
+        # print(f"Available keys: {list(self.stitcher_dict.keys())}")
+        # print(f"Requested block_idx: {block_idx}")
+        # print()
         return self.stitcher_dict[block_idx](x)
     
 class StitchDecoder(nn.Module):
@@ -571,6 +587,8 @@ class NDT1(nn.Module):
 
         config = update_config(DEFAULT_CONFIG, config)
         self.method = kwargs["method_name"]
+
+        # print("Model instantiation: ")
         
         # Build encoder
         encoder_pt_path = config["encoder"].pop("from_pt", None)
@@ -579,9 +597,15 @@ class NDT1(nn.Module):
             config["encoder"] = update_config(config.encoder, encoder_config)
         self.encoder = NeuralEncoder(config.encoder, **kwargs)
 
+        # print("Before loading state:")
+        # print(self.encoder.stitcher.stitcher_dict.keys())
+
         # Load encoder weights
         if encoder_pt_path is not None:
             self.encoder.load_state_dict(torch.load(os.path.join(encoder_pt_path,"encoder.bin")))
+
+        # print("After loading state:")
+        # print(self.encoder.stitcher.stitcher_dict.keys())
 
         self.use_prompt = config.encoder.embedder.use_prompt
         self.use_session = config.encoder.embedder.use_session
@@ -594,6 +618,9 @@ class NDT1(nn.Module):
             self.stitch_decoder = StitchDecoder(kwargs['num_neurons'], self.hidden_size)
         else:
             self.n_channels = kwargs['num_neurons'][0]
+
+        # print("After stitching:")
+        # print(self.encoder.stitcher.stitcher_dict.keys())
 
         # Build decoder
         if self.method == "ssl":
@@ -692,6 +719,10 @@ class NDT1(nn.Module):
             targets = spikes.clone()
             if self.encoder.int_spikes:
                 targets = targets.to(torch.int64)
+
+        # print("Encoder info")
+        # print(block_idx)
+        # print()
 
         # Encode neural data
         targets_mask = torch.zeros_like(spikes, dtype=torch.int64)

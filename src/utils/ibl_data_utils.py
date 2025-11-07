@@ -10,6 +10,7 @@ from functools import partial
 from scipy.interpolate import interp1d
 
 from iblutil.numerical import ismember, bincount2D
+from iblutil.numerical import ismember
 import brainbox.behavior.dlc as dlc
 from brainbox.io.one import SpikeSortingLoader, SessionLoader
 from iblatlas.regions import BrainRegions
@@ -177,7 +178,7 @@ def load_trials_and_mask(
         ]
 
     if sess_loader is None:
-        sess_loader = SessionLoader(one, eid)
+        sess_loader = SessionLoader(one=one, eid=eid)
 
     if sess_loader.trials.empty:
         sess_loader.load_trials()
@@ -240,6 +241,77 @@ def create_intervals(start_time, end_time, interval_len):
     )
     return np.c_[interval_begs, interval_ends]
 
+# def bincount2D(x, y, xbin=0, ybin=0, xlim=None, ylim=None, weights=None):
+#     """
+#     Computes a 2D histogram by aggregating values in a 2D array.
+
+#     :param x: spike times
+#     :param y: associated neurons at spikes times
+#     :param xbin: bin size = 0.02 for spike times
+#         scalar: bin size along 2nd dimension
+#         0: aggregate according to unique values
+#         array: aggregate according to exact values (count reduce operation)
+#     :param ybin: None
+#         scalar: bin size along 1st dimension
+#         0: aggregate according to unique values
+#         array: aggregate according to exact values (count reduce operation)
+#     :param xlim: interval for spike times
+#         (optional) 2 values (array or list) that restrict range along 2nd dimension
+#     :param ylim: (optional) 2 values (array or list) that restrict range along 1st dimension
+#     :param weights: (optional) defaults to None, weights to apply to each value for aggregation
+#     :return: 3 numpy arrays MAP [ny,nx] image, xscale [nx], yscale [ny]
+#     """
+#     # if no bounds provided, use min/max of vectors
+#     if xlim is None:
+#         xlim = [np.min(x), np.max(x)]
+#     if ylim is None:
+#         ylim = [np.min(y), np.max(y)]
+
+#     def _get_scale_and_indices(v, bin, lim):
+#         # print("\nget scale and indicies: ")
+#         # if bin is a nonzero scalar, this is a bin size: create scale and indices
+#         if np.isscalar(bin) and bin != 0:
+#             scale = np.arange(lim[0], lim[1] + bin / 2, bin)
+#             ind = (np.floor((v - lim[0]) / bin)).astype(np.int64) # int(time - min_time divided by binsize)
+#             print("ind")
+#             print(v[2000])
+#             print(lim[0])
+#             print(v[2000] - lim[0] / bin)
+#             print(ind[2000])
+#         # if bin == 0, aggregate over unique values
+#         else:
+#             scale, ind = np.unique(v, return_inverse=True)
+#         return scale, ind
+
+#     xscale, xind = _get_scale_and_indices(x, xbin, xlim) # bins, spikes at bin indices
+#     yscale, yind = _get_scale_and_indices(y, ybin, ylim) # unique neurons, spikes at neurons
+
+#     # print("\nbincount2D stuff: ")
+#     # print(xscale.shape, xind.shape)
+#     # print(yscale.shape, yind.shape)
+
+#     # aggregate by using bincount on absolute indices for a 2d array
+#     nx, ny = [xscale.size, yscale.size] # neurons x time bins
+#     # print("nx, ny: ", nx, ny)
+#     ind2d = np.ravel_multi_index(np.c_[yind, xind].transpose(), dims=(ny, nx))
+#     r = np.bincount(ind2d, minlength=nx * ny, weights=weights).reshape(ny, nx) # count number of unique neurons in a bin
+
+#     # if a set of specific values is requested output an array matching the scale dimensions
+#     if not np.isscalar(xbin) and xbin.size > 1:
+#         _, iout, ir = np.intersect1d(xbin, xscale, return_indices=True)
+#         _r = r.copy()
+#         r = np.zeros((ny, xbin.size))
+#         r[:, iout] = _r[:, ir]
+#         xscale = xbin
+
+#     if not np.isscalar(ybin) and ybin.size > 1:
+#         _, iout, ir = np.intersect1d(ybin, yscale, return_indices=True)
+#         _r = r.copy()
+#         r = np.zeros((ybin.size, r.shape[1]))
+#         r[iout, :] = _r[ir, :]
+#         yscale = ybin
+
+#     return r, xscale, yscale
 
 def get_spike_data_per_interval(times, clusters, interval_begs, interval_ends, interval_len, binsize, n_workers=os.cpu_count()):
     """
@@ -266,6 +338,8 @@ def get_spike_data_per_interval(times, clusters, interval_begs, interval_ends, i
         - (list): data for each interval of shape (n_clusters, n_bins)
 
     """
+    # print("og times: ", times)
+    # print("og clusters: ", clusters)
     n_intervals = len(interval_begs)
 
     # np.ceil because we want to make sure our bins contain all data
@@ -273,6 +347,10 @@ def get_spike_data_per_interval(times, clusters, interval_begs, interval_ends, i
 
     cluster_ids = np.unique(clusters)
     n_clusters_in_region = len(cluster_ids)
+
+    print("n_intervals: ", n_intervals)
+    print("n_bins: ", n_bins)
+    print("n_clusters_in_region: ", n_clusters_in_region)
 
     # This allows multiprocessing to work with nested functions
     @globalize
@@ -292,22 +370,50 @@ def get_spike_data_per_interval(times, clusters, interval_begs, interval_ends, i
             idxs_tmp = np.arange(n_clusters_in_region)
         else:
             # bin spikes
+            # print("\nSpike binning: ")
+            # print("x: ", times_curr)
+            # print(times_curr.shape)
+            # print("y: ", clust_curr)
+            # print(clust_curr.shape)
+            # print("xbin: ", binsize)
+            # print("x_lim: ", [t_beg, t_end])
+            # print()
             binned_spikes_tmp, t_idxs, cluster_idxs = bincount2D(
                 times_curr, clust_curr, xbin=binsize, xlim=[t_beg, t_end])
             # find indices of clusters that returned spikes for this trial
-            _, idxs_tmp, _ = np.intersect1d(cluster_ids, cluster_idxs, return_indices=True)
+
+            # print("binned spikes output: ")
+            # print("shape: ", binned_spikes_tmp.shape)
+            # print("n_bins shape: ", binned_spikes_tmp[:, :n_bins].shape)
+            # print()
+            
+            _, idxs_tmp, _ = np.intersect1d(cluster_ids, cluster_idxs, return_indices=True) # neuron indices relative to total neurons
         return binned_spikes_tmp[:, :n_bins], idxs_tmp, interval_idx
 
     binned_spikes = np.zeros((n_intervals, n_clusters_in_region, n_bins))
+    
+    # print("\nBIN TESTING: ")
+    # n_intervals = 2
+    # intervals = list(zip(np.arange(n_intervals), interval_begs[:n_intervals], interval_ends[:n_intervals]))
+    # print("Intervals for testing: ", intervals)
+    # for interval in tqdm(intervals):
+    #     print(f"Interval num {interval[0]}")
+    #     res = compute_spike_count(interval=interval)
+    #     binned_spikes[res[-1], res[1], :] += res[0]
+
+    #     print("Added binned spikes: ", binned_spikes)
+
     with multiprocessing.Pool(processes=n_workers) as p:
         intervals = list(zip(np.arange(n_intervals), interval_begs, interval_ends))
+
         with tqdm(total=len(intervals)) as pbar:
             for res in p.imap_unordered(compute_spike_count, intervals):
                 pbar.update()
                 binned_spikes[res[-1], res[1], :] += res[0]
         pbar.close()
         p.close()
-    return binned_spikes
+    # spikes counts in neuron x bin matrix for each interval
+    return binned_spikes # [num_trials, unique_neurons, bins] 
 
 
 def bin_spiking_data(reg_clu_ids, neural_df, intervals=None, trials_df=None, n_workers=os.cpu_count(), **kwargs):
@@ -354,19 +460,38 @@ def bin_spiking_data(reg_clu_ids, neural_df, intervals=None, trials_df=None, n_w
             kwargs['time_window'][1] - kwargs['time_window'][0]
         )
     else:
-        assert intervals is not None, 'Require intervals to segment the recording into chunks including trials and non-trials.'
+        # chunk_len = 2
+        # interval_len = 2
+
+        # intervals = np.tile([0.0, 2.0], (kwargs['n_trials'], 1))
+
+        # assert intervals is not None, 'Require intervals to segment the recording into chunks including trials and non-trials.'
+        # print("\nIntervals shape: ", intervals.shape)
+
         chunk_len = intervals[0,1] - intervals[0,0]
         interval_len = (
             intervals[0,1] - intervals[0,0]
         )
 
     # subselect spikes for this region
-    spikemask = np.isin(neural_df['spike_clusters'], reg_clu_ids)
-    regspikes = neural_df['spike_times'][spikemask]
-    regclu = neural_df['spike_clusters'][spikemask]
+    # spikemask = np.isin(neural_df['spike_clusters'], reg_clu_ids)
+    # regspikes = neural_df['spike_times'][spikemask]
+    # regclu = neural_df['spike_clusters'][spikemask]
+    # clusters_used_in_bins = np.unique(regclu)
+
+    regspikes = neural_df['spike_times']
+    regclu = neural_df['spike_clusters']
     clusters_used_in_bins = np.unique(regclu)
 
+    print("Regspikes: ", regspikes.shape)
+    print("Regclu: ", regclu.shape)
+    print("Clusters used in bins: ", clusters_used_in_bins.shape)
+    print()
+
     binsize = kwargs.get('binsize', chunk_len)
+
+    print("Bin size: ", binsize)
+    print("Chunk len: ", chunk_len)
     
     if chunk_len / binsize == 1.0:
         # one vector of neural activity per interval
@@ -374,6 +499,7 @@ def bin_spiking_data(reg_clu_ids, neural_df, intervals=None, trials_df=None, n_w
         binned = binned.T  # binned is a 2D array
         binned_list = [x[None, :] for x in binned]
     else:
+        print("\nReached get_spike_data_per_interval()")
         binned_array = get_spike_data_per_interval(
             regspikes, regclu,
             interval_begs=intervals[:, 0],
@@ -382,7 +508,12 @@ def bin_spiking_data(reg_clu_ids, neural_df, intervals=None, trials_df=None, n_w
             binsize=kwargs['binsize'],
             n_workers=n_workers)
         binned_list = [x.T for x in binned_array]   
-    return np.array(binned_list), clusters_used_in_bins
+        binned_array = np.array(binned_list)
+
+    print("Binned array shape: ", binned_array.shape)
+    # print("Binned array: ", binned_array)
+    print("Clusters in bins: ", clusters_used_in_bins.shape)
+    return binned_array, clusters_used_in_bins
     
 def load_target_behavior(one, eid, target):
     """
@@ -407,7 +538,7 @@ def load_target_behavior(one, eid, target):
     """
 
     # To load wheel and motion energy, we just use the SessionLoader, e.g.
-    sess_loader = SessionLoader(one, eid)
+    sess_loader = SessionLoader(one=one, eid=eid)
     
     # wheel is a dataframe that contains wheel times and position interpolated to a uniform sampling rate, velocity and
     # acceleration computed using Gaussian smoothing
@@ -568,7 +699,8 @@ def get_behavior_per_interval(
         interval_ends = align_times + align_interval[1]
     else:
         assert intervals is not None, 'Require intervals to segment the recording into chunks including trials and non-trials.'
-        interval_begs, interval_ends = intervals.T
+        interval_begs = intervals[:, 0]
+        interval_ends = intervals[:, 1]
 
     n_intervals = len(interval_begs)
 
@@ -687,6 +819,8 @@ def bin_behaviors(
     n_workers=os.cpu_count(),
     **kwargs
 ):
+    
+    print("\nReached bin_behaviors()")
 
     behaviors = [
         #'wheel-velocity', 'wheel-speed', 
@@ -736,31 +870,92 @@ def bin_behaviors(
     
     return behave_dict, mask_dict
 
+# def prepare_data(one, eid, bwm_df, params, n_workers=os.cpu_count()):
+    
+#     # When merging probes we are interested in eids, not pids
+#     idx = (bwm_df.eid.unique() == eid).argmax()
+#     eid = bwm_df.eid.unique()[idx]
+#     tmp_df = bwm_df.set_index(['eid', 'subject']).xs(eid, level='eid')
+#     subject = tmp_df.index[0]
+#     lab = tmp_df.lab.iloc[0]
+    
+#     pids = tmp_df['pid'].to_list()  # Select all probes of this session
+#     probe_names = tmp_df['probe_name'].to_list()
+#     print(f"Merge {len(probe_names)} probes for session eid: {eid}")
+
+#     clusters_list = []
+#     spikes_list = []
+#     for pid, probe_name in zip(pids, probe_names):
+#         tmp_spikes, tmp_clusters, sampling_freq = load_spiking_data(one, pid, eid=eid, pname=probe_name)
+#         tmp_clusters['pid'] = pid
+#         spikes_list.append(tmp_spikes)
+#         clusters_list.append(tmp_clusters)
+#     spikes, clusters = merge_probes(spikes_list, clusters_list)
+
+#     trials_df, trials_mask = load_trials_and_mask(one=one, eid=eid, max_trial_len=10.0)
+        
+#     behave_dict = load_anytime_behaviors(one, eid, n_workers=n_workers)
+    
+#     neural_dict = {
+#         'spike_times': spikes['times'],
+#         'spike_clusters': spikes['clusters'],
+#         'cluster_regions': clusters['acronym'].to_numpy(),
+#     }
+        
+#     meta_data = {
+#         'subject': subject,
+#         'eid': eid,
+#         'probe_name': probe_name,
+#         'lab': lab,
+#         'sampling_freq': sampling_freq,
+#         'cluster_channels': list(clusters['channels']),
+#         'cluster_regions': list(clusters['acronym']),
+#         'good_clusters': list((clusters['label'] >= 1).astype(int)),
+#         'cluster_depths': list(clusters['depths']),
+#         'uuids':  list(clusters['uuids']),
+#         'cluster_qc': {k: np.asarray(v) for k, v in clusters.to_dict('list').items()},
+#         # 'cluster_df': clusters
+#     }
+
+#     trials_data = {
+#         'trials_df': trials_df,
+#         'trials_mask': trials_mask
+#     }
+
+#     return neural_dict, behave_dict, meta_data, trials_data
 
 def prepare_data(one, eid, bwm_df, params, n_workers=os.cpu_count()):
-    
-    # When merging probes we are interested in eids, not pids
-    idx = (bwm_df.eid.unique() == eid).argmax()
-    eid = bwm_df.eid.unique()[idx]
-    tmp_df = bwm_df.set_index(['eid', 'subject']).xs(eid, level='eid')
-    subject = tmp_df.index[0]
-    lab = tmp_df.lab.iloc[0]
-    
-    pids = tmp_df['pid'].to_list()  # Select all probes of this session
-    probe_names = tmp_df['probe_name'].to_list()
-    print(f"Merge {len(probe_names)} probes for session eid: {eid}")
+
+    probe_insertions = one.alyx.rest('insertions', 'list', session=eid)
+    pids = [p['id'] for p in probe_insertions]
+    probe_names = [p['name'] for p in probe_insertions]
+
+    print("Start time: ", one.alyx.rest('sessions', 'read', id=eid)['start_time'] )
+
+    # pids = one.eid2pid(eid)
+    # probe_names = ['probe' + chr(65 + i) for i in range(len(pids))] 
+
+    # print("Probes: ", probe_names)
 
     clusters_list = []
     spikes_list = []
+
+    # Loop through all probe insertions for this session
     for pid, probe_name in zip(pids, probe_names):
-        tmp_spikes, tmp_clusters, sampling_freq = load_spiking_data(one, pid, eid=eid, pname=probe_name)
+        print(f"Loading data for PID: {pid} ({probe_name})")
+        tmp_spikes, tmp_clusters, sampling_freq = load_spiking_data(one=one, pid=pid, eid=eid, pname=probe_name)
         tmp_clusters['pid'] = pid
         spikes_list.append(tmp_spikes)
         clusters_list.append(tmp_clusters)
+
+    # Merge data from all probes
     spikes, clusters = merge_probes(spikes_list, clusters_list)
 
+    print("Unique clusters: ", len(set(spikes["clusters"])))
+    print()
+
     trials_df, trials_mask = load_trials_and_mask(one=one, eid=eid, max_trial_len=10.0)
-        
+
     behave_dict = load_anytime_behaviors(one, eid, n_workers=n_workers)
     
     neural_dict = {
@@ -768,7 +963,24 @@ def prepare_data(one, eid, bwm_df, params, n_workers=os.cpu_count()):
         'spike_clusters': spikes['clusters'],
         'cluster_regions': clusters['acronym'].to_numpy(),
     }
-        
+
+    print("Neural dict: ", neural_dict)
+    print(type(neural_dict['spike_times']))
+    print(type(neural_dict['spike_clusters']))
+    print(type(neural_dict['cluster_regions']))
+    print(neural_dict['cluster_regions'][0])
+
+    print("len spike times: ", len(neural_dict['spike_times']))
+    print("len spike clusters: ", len(neural_dict['spike_clusters']))
+    print("len cluster regions: ", len(neural_dict['cluster_regions']))
+
+    # print(np.unique(neural_dict['spike_clusters']))
+    # print(np.unique(neural_dict['cluster_regions']))
+
+    session_info = one.alyx.rest('sessions', 'read', eid)
+    subject = session_info['subject']
+    lab = session_info['lab']
+            
     meta_data = {
         'subject': subject,
         'eid': eid,
@@ -791,7 +1003,6 @@ def prepare_data(one, eid, bwm_df, params, n_workers=os.cpu_count()):
 
     return neural_dict, behave_dict, meta_data, trials_data
 
-
 def align_spike_behavior(binned_spikes, binned_behaviors, trials_mask=None):
 
     beh_names = ['choice', 'reward', 'block', 
@@ -811,8 +1022,15 @@ def align_spike_behavior(binned_spikes, binned_behaviors, trials_mask=None):
 
     aligned_binned_spikes = np.delete(binned_spikes, del_idxs, axis=0)
 
+    
+    print("\nAlign behaviors test:")
+    print("binned_spikes.shape[0]:", len(binned_spikes))
+    print("mask shape:", len(trials_mask))
+    print("aligned_binned_spikes: ", len(aligned_binned_spikes))
+
     aligned_binned_behaviors = {}
     for beh_name in beh_names:
+
         aligned_binned_behaviors.update({beh_name: np.delete(binned_behaviors[beh_name], del_idxs, axis=0)})
         aligned_binned_behaviors[beh_name] = np.array(
                 [y for y in aligned_binned_behaviors[beh_name]], dtype=float
@@ -821,5 +1039,54 @@ def align_spike_behavior(binned_spikes, binned_behaviors, trials_mask=None):
         assert len(aligned_binned_spikes) == len(aligned_binned_behaviors[beh_name]), f'mismatch between spike shape {len(aligned_binned_spikes)} and {beh_name} shape {len(aligned_binned_behaviors[beh_name])}'
     
     return aligned_binned_spikes, aligned_binned_behaviors
+
+# def align_spike_behavior(binned_spikes, binned_behaviors, trials_mask=None):
+
+#     beh_names = ['choice', 'reward', 'block', 
+#                  # 'wheel-speed', 
+#                  'whisker-motion-energy',  # 'pupil-diameter',
+#                 ]
+
+#     # Step 1: Initialize mask with ones
+#     target_mask = np.ones(len(binned_spikes), dtype=bool)
+
+#     # Step 2: Remove trials where *any* behavior is missing
+#     for beh_name in beh_names:
+#         beh_mask = np.array([trial is not None for trial in binned_behaviors[beh_name]], dtype=bool)
+#         if len(beh_mask) != len(binned_spikes):
+#             raise ValueError(f"Length mismatch: binned_spikes={len(binned_spikes)} vs {beh_name}={len(beh_mask)}")
+#         target_mask &= beh_mask  # Combine masks
+
+#     # Step 3: Combine with trials_mask if provided
+#     if trials_mask is not None:
+#         trial_mask_array = np.array(trials_mask.to_numpy(), dtype=bool)
+#         if len(trial_mask_array) != len(target_mask):
+#             raise ValueError(f"Trial mask shape mismatch: trial_mask={len(trial_mask_array)} vs combined_mask={len(target_mask)}")
+#         target_mask &= trial_mask_array
+
+#     # Step 4: Get valid indices
+#     keep_idxs = np.where(target_mask)[0]
+
+#     # Step 5: Align spike data
+#     aligned_binned_spikes = np.array(binned_spikes, dtype=object)[keep_idxs]
+
+#     print("Align behaviors test:")
+#     print("binned_spikes.shape[0]:", len(binned_spikes))
+#     print("mask shape:", len(target_mask))
+#     print("aligned_binned_spikes: ", len(aligned_binned_spikes))
+
+#     # Step 6: Align behavior data
+#     aligned_binned_behaviors = {}
+#     for beh_name in beh_names:
+#         beh_data = np.array(binned_behaviors[beh_name], dtype=object)[keep_idxs]
+#         beh_data = np.array([np.asarray(x, dtype=float) for x in beh_data], dtype=float)
+#         beh_data = beh_data.reshape((len(aligned_binned_spikes), -1))
+#         aligned_binned_behaviors[beh_name] = beh_data
+
+#         assert len(aligned_binned_spikes) == len(aligned_binned_behaviors[beh_name]), \
+#             f'mismatch between spike shape {len(aligned_binned_spikes)} and {beh_name} shape {len(aligned_binned_behaviors[beh_name])}'
+
+#     return aligned_binned_spikes, aligned_binned_behaviors
+
 
 
