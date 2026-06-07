@@ -13,7 +13,7 @@
 #SBATCH --gpus-per-node=1
 
 . ~/.bashrc
-conda activate og_base
+conda activate ibl
 
 # Confirm GPU visibility
 echo "===== nvidia-smi output ====="

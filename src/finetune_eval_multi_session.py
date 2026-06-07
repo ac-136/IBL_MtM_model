@@ -13,12 +13,12 @@ from utils.dataset_utils import get_data_from_h5
 from models.ndt1 import NDT1
 from models.stpatch import STPatch
 from models.itransformer import iTransformer
-from torch.optim.lr_scheduler import OneCycleLR
 import torch
 import numpy as np
 import os
 from trainer.make import make_trainer
 from utils.eval_utils import load_model_data_local, co_smoothing_eval, behavior_decoding
+from utils.optimizer_utils import build_lr_scheduler
 import threading
 import warnings
 warnings.simplefilter("ignore")
@@ -185,13 +185,11 @@ try:
             print('Train from scratch.')
         
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
-        lr_scheduler = OneCycleLR(
-                        optimizer=optimizer,
-                        total_steps=config.training.num_epochs*len(train_dataloader) //config.optimizer.gradient_accumulation_steps,
-                        max_lr=config.optimizer.lr,
-                        pct_start=config.optimizer.warmup_pct,
-                        div_factor=config.optimizer.div_factor,
-                    )
+        lr_scheduler = build_lr_scheduler(
+            optimizer=optimizer,
+            config=config,
+            steps_per_epoch=len(train_dataloader),
+        )
         
         print(config)
         print()

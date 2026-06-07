@@ -29,7 +29,7 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 300
+  num_epochs: 350
   train_batch_size: 8
   test_batch_size: 8  
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
@@ -39,6 +39,13 @@ training:
   eval_every: null  # Eval model
 
   finetune: true
+
+  early_stopping:
+    enabled: false
+    patience: 20
+    min_delta: 0.0
+    monitor: eval_loss
+    mode: min
 
 # Model configuration. 
 # Will be passed to the model __init__  method if a model is not passed to the Trainer __init__ method.
@@ -112,12 +119,22 @@ method:
           min_length: null
       
 
+# optimizer:
+#   gradient_accumulation_steps: 1
+#   lr: 1.e-3
+#   # wd: 0.01
+#   wd: 1.e-3
+#   eps: 1.e-8
+#   # warmup_pct: 0.15 # cosine/linear
+#   warmup_pct: 0.02
+#   gamma: 0.95     # step
+#   div_factor: 10  # cosine
+#   scheduler: cosine # step/cosine/linear
+
 optimizer:
   gradient_accumulation_steps: 1
-  lr: 1.e-3
-  wd: 0.01
+  lr: 1.e-4
+  wd: 1.e-4
   eps: 1.e-8
-  warmup_pct: 0.15 # cosine/linear
-  gamma: 0.95     # step
-  div_factor: 10  # cosine
-  scheduler: cosine # step/cosine/linear
+  warmup_pct: 0.0
+  scheduler: linear

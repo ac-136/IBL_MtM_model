@@ -9,7 +9,6 @@ from models.ndt1 import NDT1
 from models.stpatch import STPatch
 import torch
 import numpy as np
-import subprocess
 import os
 from trainer.make import make_trainer
 import threading
@@ -19,30 +18,16 @@ from utils.optimizer_utils import build_lr_scheduler
 JUST_SPIKES = True
 BASE_PATH = '/work/hdd/beml/ac136'
 # DATA_TYPE = "just_spikes"
-# RESULTS_PATH = "training_og"
-
-# DATA_TYPE = "processed_qixian_data_old"
-# RESULTS_PATH = "qixian_model/early_stopping/param_8"
-
-# DATA_TYPE = "processed_kimia_020923_concat/"
-# RESULTS_PATH = "results_kimia_020923/"
+# RESULTS_PATH = "results_og_multi_session"
 
 DATA_TYPE = "benchmark_datasets"
 RESULTS_PATH = "benchmark_results"
 
-# Optionally copy and use datasets from a fast tmpfs location.
-# Set `USE_TMP_DATA=1` and optionally `TMP_DATA_DIR` to enable.
-# Optionally set USE_TMP_DATA later if needed (removed tmp-copy logic)
-
-# DATA_TYPE = "processed_recording1_folds"
-# RESULTS_PATH = "results_recording1_folds"
-
 ap = argparse.ArgumentParser()
-ap.add_argument("--eid", type=str, default='c7248e09-8c0d-40f2-9eb4-700a8973d8c8_aligned')
+ap.add_argument("--num-sessions", type=int, default=None)
+ap.add_argument("--train-session-eid", nargs="+", default=None)
+ap.add_argument("--model_name", type=str, default=None)
 args = ap.parse_args()
-
-
-eid = args.eid
 
 # load config
 kwargs = {
@@ -54,28 +39,30 @@ kwargs = {
 
 config = config_from_kwargs(kwargs)
 config = update_config("src/configs/ndt1_stitching.yaml", config)
-config = update_config("src/configs/ssl_session_trainer.yaml", config) # single session
+config = update_config("src/configs/ssl_sessions_trainer.yaml", config) # multi session
 
-# config = update_config("src/configs/ssl_sessions_trainer.yaml", config)
+if args.train_session_eid is not None:
+    config["data"]["train_session_eid"] = args.train_session_eid
+if args.num_sessions is not None:
+    config["data"]["num_sessions"] = args.num_sessions
 
 # set seed for reproducibility
 set_seed(config.seed)
 
-# load dataset
-# eid = 'c7248e09-8c0d-40f2-9eb4-700a8973d8c8_aligned'
+# load dataset from the multi-session config rather than forcing a single eid
 train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset_locally(
-                            eid=eid,
-                            num_sessions=1, # 1
+                            eid=None,
+                            num_sessions=config.data.num_sessions,
                             split_method=config.data.split_method, # predefined
-                            train_session_eid=[eid],
+                            train_session_eid=config.data.train_session_eid,
                             test_session_eid=config.data.test_session_eid, # []
-                            batch_size=config.training.train_batch_size, # 8
+                            batch_size=config.training.train_batch_size,
                             eval_batch_size=config.training.test_batch_size,
+                            use_re=False,
                             seed=config.seed,
                             just_spikes=JUST_SPIKES,
                             data_type=DATA_TYPE,
-                            base_path=BASE_PATH
-                            )
+                            base_path=BASE_PATH)
 
 # # download dataset from huggingface
 # eid = None
@@ -103,15 +90,11 @@ train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset_locally(
 #                                                          seed=config.seed)
 
 num_sessions = len(meta_data["eids"])
+run_name = args.model_name if args.model_name is not None else "num_session_{}".format(num_sessions)
 
 log_dir = os.path.join(BASE_PATH, RESULTS_PATH, 
                             "train", 
-                            # "num_session_{}".format(num_sessions), 
-                            # "model_{}".format(config.model.model_class), 
-                            # "method_{}".format(config.method.model_kwargs.method_name), 
-                            # "mask_{}".format(config.encoder.masker.mode),
-                            # "stitch_{}".format(config.encoder.stitching), 
-                            "{}".format(eid))
+                            run_name)
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
         

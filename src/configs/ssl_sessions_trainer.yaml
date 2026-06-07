@@ -28,9 +28,10 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 1000
+  num_epochs: 500
   train_batch_size: 16
-  test_batch_size: 16  
+  # test_batch_size: 16
+  test_batch_size: 1  
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
 
   save_plot_every_n_epochs: 10  # Plot the model output every n epochs
@@ -38,6 +39,13 @@ training:
   eval_every: null  # Eval model
 
   dummy: true  # Use dummy data
+
+  early_stopping:
+    enabled: false
+    patience: 20
+    min_delta: 0.0
+    monitor: eval_loss
+    mode: min
 
 
 # Model configuration. 
@@ -75,7 +83,7 @@ data:
   load_meta: true
 
   num_sessions: 10
-  train_session_eid: ['72cb5550-43b4-4ef0-add5-e4adfdfb5e02', '51e53aff-1d5d-4182-a684-aba783d50ae5', 'd57df551-6dcb-4242-9c72-b806cff5613a', 'e2b845a1-e313-4a08-bc61-a5f662ed295e', 'd2832a38-27f6-452d-91d6-af72d794136c'] 
+  train_session_eid: ["c7248e09-8c0d-40f2-9eb4-700a8973d8c8_aligned","f312aaec-3b6f-44b3-86b4-3a0c119c0438_aligned","ecb5520d-1358-434c-95ec-93687ecd1396_aligned","a8a8af78-16de-4841-ab07-fde4b5281a03_aligned","4b7fbad4-f6de-43b4-9b15-c7c7ef44db4b_aligned","71e55bfe-5a3a-4cba-bdc7-f085140d798e_aligned","a66f1593-dafd-4982-9b66-f9554b6c86b5_aligned","0802ced5-33a3-405e-8336-b65ebc5cb07c_aligned","72cb5550-43b4-4ef0-add5-e4adfdfb5e02_aligned","781b35fd-e1f0-4d14-b2bb-95b7263082bb_aligned"]
   test_session_eid: [] 
 
   split_method: predefined # random_split/session_based/predefined
@@ -121,9 +129,7 @@ method:
 optimizer:
   gradient_accumulation_steps: 1
   lr: 1.e-4
-  wd: 0.01
+  wd: 1.e-4
   eps: 1.e-8
-  warmup_pct: 0.15 # cosine/linear
-  gamma: 0.95     # step
-  div_factor: 10  # cosine
-  scheduler: cosine # step/cosine/linear
+  warmup_pct: 0.0
+  scheduler: linear

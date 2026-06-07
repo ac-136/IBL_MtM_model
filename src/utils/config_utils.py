@@ -6,7 +6,10 @@ import yaml
 class DictConfig(dict):
 
     def __getattr__(self, name):
-        value = self[name]
+        try:
+            value = self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
         if isinstance(value, dict):
             value = DictConfig(value)
         return value

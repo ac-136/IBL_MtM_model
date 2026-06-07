@@ -72,6 +72,14 @@ class Masker(nn.Module):
         if 'all' in self.target_regions:
             target_regions = list(np.unique(neuron_regions))
 
+
+        # ### FREEZE LAYERS FIX ###
+        # if 'all' in self.mask_regions:
+        #     mask_regions = torch.unique(neuron_regions).tolist()
+
+        # if 'all' in self.target_regions:
+        #     target_regions = torch.unique(neuron_regions).tolist()
+
         mask_ratio = self.ratio
         if self.mode in ["temporal", "random_token", "causal"]:
             # Expand mask

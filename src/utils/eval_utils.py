@@ -8,7 +8,6 @@ from utils.config_utils import config_from_kwargs, update_config
 from models.ndt1 import NDT1
 from models.stpatch import STPatch
 from models.itransformer import iTransformer
-from torch.optim.lr_scheduler import OneCycleLR
 from sklearn.metrics import r2_score
 from scipy.special import gammaln
 import matplotlib.pyplot as plt
@@ -20,6 +19,7 @@ import matplotlib.colors as colors
 import os
 from trainer.make import make_trainer
 from pathlib import Path
+from utils.optimizer_utils import build_lr_scheduler
 
 NAME2MODEL = {"NDT1": NDT1, "STPatch": STPatch, "iTransformer": iTransformer}
 
@@ -87,6 +87,7 @@ def load_model_data_local(**kwargs):
                             split_method="predefined",
                             test_session_eid=[],
                             batch_size=config.training.train_batch_size,
+                            eval_batch_size=config.training.test_batch_size,
                             seed=seed,
                             eid=eid,
                             just_spikes=just_spikes,
@@ -94,6 +95,9 @@ def load_model_data_local(**kwargs):
 
     print(meta_data)
     print()
+
+    print("MODEL PATH")
+    print(model_path)
 
     model_class = NAME2MODEL[config.model.model_class]
     model = model_class(config.model, **config.method.model_kwargs, **meta_data)    
@@ -716,12 +720,17 @@ def co_smoothing_eval(
     bps_all = np.array(bps_result_list)
     bps_mean = np.nanmean(bps_all)
     bps_std = np.nanstd(bps_all)
-    plt.hist(bps_all, bins=30, alpha=0.75, color='red', edgecolor='black')
-    plt.xlabel('bits per spike')
-    plt.ylabel('count')
-    plt.title('Co-bps distribution\n mean: {:.2f}, std: {:.2f}\n # non-zero neuron: {}'.format(bps_mean, bps_std, len(bps_all)));
-    plt.savefig(os.path.join(kwargs['save_path'], f'bps.png'), dpi=200)
-    np.save(os.path.join(kwargs['save_path'], f'bps.npy'), bps_all)
+
+    if len(bps_all) == 0 or np.isnan(bps_all).all():
+        print("Warning: all values are NaN, skipping histogram")
+    else:
+        plt.hist(bps_all[~np.isnan(bps_all)], bins=30, alpha=0.75, color='red', edgecolor='black')
+
+        plt.xlabel('bits per spike')
+        plt.ylabel('count')
+        plt.title('Co-bps distribution\n mean: {:.2f}, std: {:.2f}\n # non-zero neuron: {}'.format(bps_mean, bps_std, len(bps_all)));
+        plt.savefig(os.path.join(kwargs['save_path'], f'bps.png'), dpi=200)
+        np.save(os.path.join(kwargs['save_path'], f'bps.npy'), bps_all)
     
     # save R2
     if data_type == "processed_miv":
@@ -997,13 +1006,11 @@ def behavior_decoding(**kwargs):
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps
         )
-        lr_scheduler = OneCycleLR(
-                        optimizer=optimizer,
-                        total_steps=config.training.num_epochs*len(train_dataloader) //config.optimizer.gradient_accumulation_steps,
-                        max_lr=config.optimizer.lr,
-                        pct_start=config.optimizer.warmup_pct,
-                        div_factor=config.optimizer.div_factor,
-                    )
+        lr_scheduler = build_lr_scheduler(
+            optimizer=optimizer,
+            config=config,
+            steps_per_epoch=len(train_dataloader),
+        )
 
         trainer_kwargs = {
             "log_dir": log_dir,

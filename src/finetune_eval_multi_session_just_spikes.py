@@ -13,22 +13,43 @@ from utils.dataset_utils import get_data_from_h5
 from models.ndt1 import NDT1
 from models.stpatch import STPatch
 from models.itransformer import iTransformer
-from torch.optim.lr_scheduler import OneCycleLR
 import torch
 import numpy as np
 import os
+from pathlib import Path
 from trainer.make import make_trainer
 from utils.eval_utils import load_model_data_local, co_smoothing_eval, behavior_decoding
+from utils.optimizer_utils import build_lr_scheduler
 import threading
 import warnings
 warnings.simplefilter("ignore")
 
 JUST_SPIKES = True
+TRAINED = True
 # DATA_TYPE = "processed_miv"
 # RESULTS_PATH = "results_processed_miv"
 
-DATA_TYPE = "processed_st"
-RESULTS_PATH = "results_st"
+# DATA_TYPE = "processed_ece/20s_1kT_kin100/seed_420"
+# RESULTS_PATH = "results_ece/20s_1kT_kin100/seed_420"
+
+# DATA_TYPE = "processed_kimia_data"
+# RESULTS_PATH = "results_kimia"
+
+# DATA_TYPE = "processed_qixian_data"
+# RESULTS_PATH = "results_qixian"
+
+# DATA_TYPE = "just_spikes"
+# RESULTS_PATH = "single_session"
+
+# DATA_TYPE = "processed_new_qixian_data/Experiment1"
+# RESULTS_PATH = "new_qixian/Experiment1"
+
+# DATA_TYPE = "processed_wetlab"
+# RESULTS_PATH = "results_wetlab"
+
+DATA_TYPE = "just_spikes"
+RESULTS_PATH = "results_og_multi_session"
+
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--test_eid", type=str, default='51e53aff-1d5d-4182-a684-aba783d50ae5')
@@ -42,6 +63,7 @@ ap.add_argument("--eval", type=str, default="True")
 ap.add_argument("--base_path", type=str, default='/work/hdd/beml/ac136')
 ap.add_argument("--num_train_sessions", type=int, default=1)
 ap.add_argument('--use_dummy', action='store_true')
+ap.add_argument('--model_path', type=str, default='/work/hdd/beml/ac136/training_og/train/num_session_1/model_NDT1/method_ssl/mask_temporal/stitch_True/5dcee0eb-b34d-4652-acc3-d10afc6eae68/model_best.pt')
 args = ap.parse_args()
 
 eid = args.test_eid
@@ -55,6 +77,9 @@ print("Args to finetune_eval_multi_session: ")
 for arg, value in vars(args).items():
     print(f"{arg}: {value}")
 print()
+
+if TRAINED:
+    ss_model_name = Path(args.model_path).parent.name
 
 if args.prompting == "True":
     if args.model_name == 'NDT1':
@@ -97,19 +122,27 @@ try:
                             train_session_eid=[eid],
                             test_session_eid=config.data.test_session_eid,
                             batch_size=config.training.train_batch_size,
+                            eval_batch_size=config.training.test_batch_size,
                             seed=config.seed,
                             just_spikes=JUST_SPIKES,
                             data_type=DATA_TYPE)
-
-        log_dir = os.path.join(base_path, RESULTS_PATH, 
+        
+        if TRAINED:
+            log_dir = os.path.join(base_path, RESULTS_PATH, 
                             "finetune", 
-                            "num_session_{}".format(num_train_sessions),
-                            "model_{}".format(config.model.model_class), 
-                            "method_{}".format(config.method.model_kwargs.method_name), 
-                            "mask_{}".format(args.mask_mode),
-                            "stitch_{}".format(config.model.encoder.stitching),
+                            "model_{}".format(ss_model_name),
                             "{}".format(eid)
                             )
+        else:
+            log_dir = os.path.join(base_path, RESULTS_PATH, 
+                                "finetune", 
+                                "num_session_{}".format(num_train_sessions),
+                                "model_{}".format(config.model.model_class), 
+                                "method_{}".format(config.method.model_kwargs.method_name), 
+                                "mask_{}".format(args.mask_mode),
+                                "stitch_{}".format(config.model.encoder.stitching),
+                                "{}".format(eid)
+                                )
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         
@@ -183,7 +216,12 @@ try:
         elif args.mask_mode == 'all':
             mask_path = 'MtM'
 
-        pretrain_model_path = f'{base_path}/models/ibl-foundation-model__multi-{args.model_name}-{mask_path}-{num_train_sessions}-sessions/model_best.pt'
+        if TRAINED:
+            pretrain_model_path = args.model_path
+        else:
+            pretrain_model_path = f'{base_path}/models/ibl-foundation-model__multi-{args.model_name}-{mask_path}-{num_train_sessions}-sessions/model_best.pt'
+
+
         if num_train_sessions > 1:
             print('\nLoad pretrain model from:', pretrain_model_path)
             print()
@@ -198,15 +236,41 @@ try:
                 model.load_state_dict(torch.load(pretrain_model_path)['model'].state_dict(), strict=False)
         else:
             print('Train from scratch.')
-        
+
+
+
+        # ### FREEZE LAYERS ###
+        # for name, param in model.named_parameters():
+        #         param.requires_grad = False
+
+        # # unfreeze final layer
+        # model.decoder[0].weight.requires_grad = True
+        # model.decoder[0].bias.requires_grad = True
+        # model.stitch_decoder.stitch_decoder_dict['300'].weight.requires_grad = True
+        # model.stitch_decoder.stitch_decoder_dict['300'].bias.requires_grad = True
+
+
+        # for name, param in model.named_parameters():
+        #     print(name, param.requires_grad)
+
+        # accelerator = Accelerator()
+        # model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
+        #     model,
+        #     torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
+        #                     lr=config.optimizer.lr,
+        #                     weight_decay=config.optimizer.wd,
+        #                     eps=config.optimizer.eps),
+        #     train_dataloader,
+        #     val_dataloader
+        # )
+
+                
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
-        lr_scheduler = OneCycleLR(
-                        optimizer=optimizer,
-                        total_steps=config.training.num_epochs*len(train_dataloader) //config.optimizer.gradient_accumulation_steps,
-                        max_lr=config.optimizer.lr,
-                        pct_start=config.optimizer.warmup_pct,
-                        div_factor=config.optimizer.div_factor,
-                    )
+        lr_scheduler = build_lr_scheduler(
+            optimizer=optimizer,
+            config=config,
+            steps_per_epoch=len(train_dataloader),
+        )
         
         print(config)
         print()
@@ -277,12 +341,15 @@ try:
         elif args.mask_mode == 'all':
             mask_path = 'MtM'
 
-        pretrain_model_path = f'{base_path}/models/ibl-foundation-model__multi-{args.model_name}-{mask_path}-{num_train_sessions}-sessions/model_best.pt'
+        if TRAINED:
+            finetune_model_path = f'{base_path}/{RESULTS_PATH}/finetune/model_{ss_model_name}/{eid}/model_best.pt'
+        else:
+            finetune_model_path = f'{base_path}/{RESULTS_PATH}/finetune/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/model_best.pt'
 
         configs = {
             'model_config': model_config,
-            # 'model_path': pretrain_model_path,
-            'model_path': f'{base_path}/{RESULTS_PATH}/finetune/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/model_best.pt',
+            'model_path': finetune_model_path,
+            # 'model_path': f'{base_path}/{RESULTS_PATH}/finetune/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/model_best.pt',
             'trainer_config': f'src/configs/trainer_{model_acroynm}.yaml',
             'dataset_path': None, 
             'test_size': 0.2,
@@ -304,6 +371,11 @@ try:
         # else:
         #     is_aligned = True
 
+        if TRAINED:
+            save_path = f'{base_path}/{RESULTS_PATH}/eval/{ss_model_name}/{eid}'
+        else:
+            save_path = f'{base_path}/{RESULTS_PATH}/eval/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}'
+
         # co-smoothing
         if co_smooth:
             print('Start co-smoothing:')
@@ -311,7 +383,7 @@ try:
                 'subtract': 'task',
                 'onset_alignment': [40],
                 'method_name': mask_name, 
-                'save_path': f'{base_path}/{RESULTS_PATH}/eval/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/co_smooth',
+                'save_path': f'{save_path}/co_smooth',
                 'mode': 'per_neuron',
                 'n_time_steps': n_time_steps,    
                 'is_aligned': is_aligned,
@@ -335,7 +407,7 @@ try:
                 'subtract': 'task',
                 'onset_alignment': [],
                 'method_name': mask_name, 
-                'save_path': f'{base_path}/{RESULTS_PATH}/eval/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/forward_pred',
+                'save_path': f'{save_path}/forward_pred',
                 'mode': 'forward_pred',
                 'n_time_steps': n_time_steps,    
                 'held_out_list': list(range(90, 100)), # NLB uses 200 ms for fp
@@ -361,7 +433,7 @@ try:
                 'subtract': 'task',
                 'onset_alignment': [40],
                 'method_name': mask_name,
-                'save_path': f'{base_path}/{RESULTS_PATH}/eval/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/inter_region',
+                'save_path': save_path,
                 'mode': 'inter_region',
                 'n_time_steps': n_time_steps,    
                 'held_out_list': None,
@@ -386,7 +458,7 @@ try:
                 'subtract': 'task',
                 'onset_alignment': [40],
                 'method_name': mask_name, 
-                'save_path': f'{base_path}/results/eval/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/intra_region',
+                'save_path': save_path,
                 'mode': 'intra_region',
                 'n_time_steps': n_time_steps,    
                 'held_out_list': None,

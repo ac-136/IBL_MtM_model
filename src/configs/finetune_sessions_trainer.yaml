@@ -41,7 +41,7 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 1000
+  num_epochs: 200
   train_batch_size: 16
   test_batch_size: 16  
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
@@ -51,6 +51,13 @@ training:
   eval_every: null  # Eval model
 
   dummy: true  # Use dummy data
+
+  early_stopping:
+    enabled: false
+    patience: 10
+    min_delta: 0.0
+    monitor: eval_loss
+    mode: min
 
 
 # Model configuration. 

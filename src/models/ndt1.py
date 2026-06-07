@@ -20,8 +20,18 @@ DEFAULT_CONFIG = "src/configs/ndt1.yaml"
 # with open('data/target_eids.txt') as file:
 #     include_eids = [line.rstrip() for line in file]
 
+# with open('data/test_re_eids.txt') as file:
+#     include_eids = [line.rstrip() for line in file]
+
+# with open('data/miv_eids.txt') as file:
+#     include_eids = [line.rstrip() for line in file]
+
+# with open('data/ece_eids.txt') as file:
+#     include_eids = [line.rstrip() for line in file]
+
 with open('data/spike_eids.txt') as file:
     include_eids = [line.rstrip() for line in file]
+
 
 @dataclass
 class NDT1Output(ModelOutput):
@@ -702,6 +712,17 @@ class NDT1(nn.Module):
         # if neuron_regions type is list 
         if isinstance(neuron_regions, list):
             neuron_regions = np.asarray(neuron_regions).T
+
+        # ### FREEZE FIX
+        # device = next(self.parameters()).device
+        # if isinstance(neuron_regions, list):
+        #     # Convert list to a tensor
+        #     neuron_regions = torch.stack([t.to(device) if torch.is_tensor(t) else torch.tensor(t, device=device)
+        #                           for t in neuron_regions])
+            
+        #     neuron_regions = neuron_regions.T
+
+
 
         # Augmentation
         if spike_augmentation:

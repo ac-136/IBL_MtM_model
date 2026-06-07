@@ -16,6 +16,7 @@ DATA_COLUMNS = ['spikes_sparse_data', 'spikes_sparse_indices', 'spikes_sparse_in
 TARGET_EIDS="data/target_eids.txt"
 TEST_RE_EIDS="data/test_re_eids.txt"
 
+
 def get_target_eids():
     with open(TARGET_EIDS) as file:
         include_eids = [line.rstrip() for line in file]
@@ -277,25 +278,33 @@ def load_locally(data_path, data_type, eid):
     aligned_data_dir_path = os.path.join(data_path, eid, "data")
 
     if data_type == "dataset":
-        dataset = load_dataset(
-            "parquet",
-            data_files={
-                "train": os.path.join(aligned_data_dir_path, "train-00000-of-00001.parquet"),
-                "val": os.path.join(aligned_data_dir_path, "val-00000-of-00001.parquet"),
-                "test": os.path.join(aligned_data_dir_path, "test-00000-of-00001.parquet"),
-            }
-        )
+        split_files = {
+            "train": os.path.join(aligned_data_dir_path, "train-00000-of-00001.parquet"),
+            "val": os.path.join(aligned_data_dir_path, "val-00000-of-00001.parquet"),
+            "test": os.path.join(aligned_data_dir_path, "test-00000-of-00001.parquet"),
+        }
     else:
-        dataset = load_dataset(
-            "parquet",
-            data_files={
-                "train": os.path.join(aligned_data_dir_path, "train.parquet"),
-                "val": os.path.join(aligned_data_dir_path, "val.parquet"),
-                "test": os.path.join(aligned_data_dir_path, "test.parquet"),
-            }
-        )
+        split_files = {
+            "train": os.path.join(aligned_data_dir_path, "train.parquet"),
+            "val": os.path.join(aligned_data_dir_path, "val.parquet"),
+            "test": os.path.join(aligned_data_dir_path, "test.parquet"),
+        }
+
+    existing_split_files = {
+        split_name: split_path
+        for split_name, split_path in split_files.items()
+        if os.path.exists(split_path)
+    }
+
+    if "train" not in existing_split_files:
+        raise FileNotFoundError(f"Missing train split in {aligned_data_dir_path}")
+    if "val" not in existing_split_files:
+        raise FileNotFoundError(f"Missing val split in {aligned_data_dir_path}")
+
+    dataset = load_dataset("parquet", data_files=existing_split_files)
     
     print("Load locally path: ", aligned_data_dir_path)
+    print("Available splits: ", list(existing_split_files.keys()))
 
     return dataset
 
@@ -304,6 +313,7 @@ def load_ibl_dataset_locally(
                      train_aligned=True,
                      data_type = "just_spikes",
                      just_spikes = True,
+                     base_path = '/work/hdd/beml/ac136_codex_test',
                      eid=None, # specify 1 session for training, random_split will be used
                      num_sessions=5, # total number of sessions for training and testing
                      split_method="session_based",
@@ -311,7 +321,8 @@ def load_ibl_dataset_locally(
                      test_session_eid=[], # specify session eids for testing, session_based will be used
                      split_size = 0.1,
                      mode = "train",
-                     batch_size=16,
+                     batch_size=1,
+                     eval_batch_size=None,
                      use_re=False,
                      seed=42):
 
@@ -327,11 +338,33 @@ def load_ibl_dataset_locally(
     print(f"split_size: ", split_size)
     print(f"mode: ", mode)
     print(f"batch_size: ", batch_size)
+    print(f"eval_batch_size: ", eval_batch_size)
     print(f"use_re: ", use_re)
     print(f"seed: ", seed)
 
+    def trim_len_to_batch_size(num_trials, trim_batch_size, split_name, dataset_eid):
+        if num_trials == 0:
+            return 0
+        if trim_batch_size is None or trim_batch_size <= 1:
+            return num_trials
+
+        trimmed_trials = num_trials - num_trials % trim_batch_size
+        if trimmed_trials == 0:
+            print(
+                f"Keeping all {num_trials} {split_name} trial(s) for {dataset_eid}; "
+                f"rounding down to batch size {trim_batch_size} would make the split empty."
+            )
+            return num_trials
+
+        if trimmed_trials != num_trials:
+            print(
+                f"Trimming {split_name} split for {dataset_eid} from "
+                f"{num_trials} to {trimmed_trials} trial(s) using batch size {trim_batch_size}."
+            )
+        return trimmed_trials
+
     ### HANDLE DIFF DATASET LOADING BETWEEN SPIKES ONLY AND OG DATASETS ###
-    data_path = os.path.join("/work/hdd/beml/ac136/", data_type)
+    data_path = os.path.join(base_path, data_type)
 
     # if data_type == "processed_miv":
     #     train_aligned = False
@@ -369,16 +402,21 @@ def load_ibl_dataset_locally(
         
         # session_dataset = load_dataset(dataset_eid, cache_dir=cache_dir)
         session_dataset = dataset
-        train_trials = len(session_dataset["train"]["spikes_sparse_data"])
-        train_trials = train_trials - train_trials % batch_size
+        eval_trim_batch_size = eval_batch_size if eval_batch_size is not None else batch_size
+
+        train_trials = trim_len_to_batch_size(
+            len(session_dataset["train"]["spikes_sparse_data"]), batch_size, "train", eid
+        )
         session_train_datasets.append(session_dataset["train"].select(list(range(train_trials))))
 
-        val_trials = len(session_dataset["val"]["spikes_sparse_data"])
-        val_trials = val_trials - val_trials % batch_size
+        val_trials = trim_len_to_batch_size(
+            len(session_dataset["val"]["spikes_sparse_data"]), eval_trim_batch_size, "val", eid
+        )
         session_val_datasets.append(session_dataset["val"].select(list(range(val_trials))))
 
-        test_trials = len(session_dataset["test"]["spikes_sparse_data"])
-        test_trials = test_trials - test_trials % batch_size
+        test_trials = trim_len_to_batch_size(
+            len(session_dataset["test"]["spikes_sparse_data"]), eval_trim_batch_size, "test", eid
+        )
         session_test_datasets.append(session_dataset["test"].select(list(range(test_trials))))
         binned_spikes_data = get_binned_spikes_from_sparse([session_dataset["train"]["spikes_sparse_data"][0]], 
                                                             [session_dataset["train"]["spikes_sparse_indices"][0]],
@@ -410,7 +448,7 @@ def load_ibl_dataset_locally(
 
         return train_dataset, val_dataset, test_dataset, meta_data
 
-    dataset_name_list = os.listdir(data_path)
+    dataset_name_list = os.listdir(data_path) # all aligned
 
     print("Total session-wise datasets found: ", len(dataset_name_list))
     print("Eid is none test: ", eid)
@@ -428,6 +466,10 @@ def load_ibl_dataset_locally(
         else:
             train_session_eid_dir = [eid_dir]
             user_datasets = [eid_dir]
+
+    # print(train_session_eid_dir)
+    # print(user_datasets)
+    # print()
 
 
     if len(test_session_eid) > 0:
@@ -449,16 +491,20 @@ def load_ibl_dataset_locally(
                 train_session_eid_dir = [os.path.join(data_path, eid) for eid in train_session_eid]
             print("reached first check")
             print(train_session_eid_dir)
+            print()
         else:
             train_session_eid_dir = user_datasets
             
-        if train_aligned:
-            train_session_eid_dir = [eid for eid in train_session_eid_dir if "aligned" in eid]
-            print("reached train_aligned")
-            print(train_session_eid_dir)
-            print()
-        else:
-            train_session_eid_dir = [eid for eid in train_session_eid_dir if "aligned" not in eid]
+        ### GOT RID OF FOR TRAINING ###
+        # if train_aligned:
+        #     train_session_eid_dir = [eid for eid in train_session_eid_dir if "aligned" in eid]
+        #     print("reached train_aligned")
+        #     print(train_session_eid_dir)
+        #     print()
+        # else:
+        #     train_session_eid_dir = [eid for eid in train_session_eid_dir if "aligned" not in eid]
+
+
     assert len(train_session_eid_dir) > 0, "No training datasets found"
     assert not (len(test_session_eid) > 0 and split_method == "random_split"), "When you have a test session, the split method should be 'session_based'"
 
@@ -489,6 +535,10 @@ def load_ibl_dataset_locally(
             train_session_eid_dir = [eid for eid in train_session_eid_dir if eid.split('_')[0].split('/')[1] in target_eids]
             # remove the test_re_eids from the train_session_eid_dir
             train_session_eid_dir = [eid for eid in train_session_eid_dir if eid.split('_')[0].split('/')[1] not in test_re_eids]
+
+
+        print(train_session_eid_dir)
+        print(train_session_eid_dir[:num_sessions])    
         for dataset_eid in tqdm(train_session_eid_dir[:num_sessions]):
             try:
                 print("Dataset id: ", dataset_eid)
@@ -498,18 +548,36 @@ def load_ibl_dataset_locally(
                 session_dataset = load_locally(data_path=data_path, data_type=data_type, eid=dataset_eid)
 
                 print("Results of load_locally: ", session_dataset)
+                print()
 
-                train_trials = len(session_dataset["train"]["spikes_sparse_data"])
-                train_trials = train_trials - train_trials % batch_size
+                eval_trim_batch_size = eval_batch_size if eval_batch_size is not None else batch_size
+
+                train_trials = trim_len_to_batch_size(
+                    len(session_dataset["train"]["spikes_sparse_data"]),
+                    batch_size,
+                    "train",
+                    dataset_eid,
+                )
                 session_train_datasets.append(session_dataset["train"].select(list(range(train_trials))))
 
-                val_trials = len(session_dataset["val"]["spikes_sparse_data"])
-                val_trials = val_trials - val_trials % batch_size
+                val_trials = trim_len_to_batch_size(
+                    len(session_dataset["val"]["spikes_sparse_data"]),
+                    eval_trim_batch_size,
+                    "val",
+                    dataset_eid,
+                )
                 session_val_datasets.append(session_dataset["val"].select(list(range(val_trials))))
 
-                test_trials = len(session_dataset["test"]["spikes_sparse_data"])
-                test_trials = test_trials - test_trials % batch_size
-                session_test_datasets.append(session_dataset["test"].select(list(range(test_trials))))
+                if "test" in session_dataset:
+                    test_trials = trim_len_to_batch_size(
+                        len(session_dataset["test"]["spikes_sparse_data"]),
+                        eval_trim_batch_size,
+                        "test",
+                        dataset_eid,
+                    )
+                    session_test_datasets.append(session_dataset["test"].select(list(range(test_trials))))
+                else:
+                    print(f"No test split found for {dataset_eid}; continuing with train/val only.")
 
                 binned_spikes_data = get_binned_spikes_from_sparse([session_dataset["train"]["spikes_sparse_data"][0]], 
                                                                     [session_dataset["train"]["spikes_sparse_indices"][0]],
@@ -534,12 +602,16 @@ def load_ibl_dataset_locally(
                 continue
         print("session eid used: ", eids_set)
         print("Total number of session: ", len(eids_set))
+        if len(session_train_datasets) == 0:
+            raise ValueError("No training datasets were loaded successfully.")
+        if len(session_val_datasets) == 0:
+            raise ValueError("No validation datasets were loaded successfully.")
         train_dataset = concatenate_datasets(session_train_datasets)
         val_dataset = concatenate_datasets(session_val_datasets)
-        test_dataset = concatenate_datasets(session_test_datasets)
+        test_dataset = concatenate_datasets(session_test_datasets) if len(session_test_datasets) > 0 else None
         print("Train dataset size: ", len(train_dataset))
         print("Val dataset size: ", len(val_dataset))
-        print("Test dataset size: ", len(test_dataset))
+        print("Test dataset size: ", 0 if test_dataset is None else len(test_dataset))
         print("Just spikes: ", just_spikes)
 
         num_neuron_set = list(num_neuron_set)
