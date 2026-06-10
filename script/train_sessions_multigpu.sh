@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=benchmark-ss
-#SBATCH --output=benchmark-ss-%j.out
-#SBATCH --error=benchmark-ss-%j.err
+#SBATCH --job-name=benchmark-ss-mg
+#SBATCH --output=benchmark-ss-mg-%j.out
+#SBATCH --error=benchmark-ss-mg-%j.err
 
 #SBATCH -t 01:00:00
 
@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --account=beml-dtai-gh
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 
 . ~/.bashrc
 conda activate mtm
@@ -36,7 +36,7 @@ gpu_monitor_pid=""
 start_time=$(date +%s)
 status="running"
 exit_code=0
-cmd=(python src/train_sessions.py --eid "$EID")
+cmd=(accelerate launch --num_processes "$gpu_count" --num_machines 1 src/train_sessions.py --eid "$EID")
 if [ -n "${TRAIN_BATCH_SIZE}" ]; then
     cmd+=(--train-batch-size "${TRAIN_BATCH_SIZE}")
 fi
@@ -147,6 +147,7 @@ trap 'record_interrupt 130' INT
 trap 'record_interrupt 143' TERM
 
 echo "EID: $EID"
+echo "GPUs: $gpu_count"
 
 start_gpu_monitor
 "${cmd[@]}"

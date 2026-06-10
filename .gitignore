@@ -173,6 +173,8 @@ results
 *.pt
 data
 *.out
+*.csv
+*.err
 
 *gz
 *results*

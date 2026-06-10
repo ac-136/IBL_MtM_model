@@ -1,6 +1,7 @@
 from datasets import load_dataset, load_from_disk, concatenate_datasets, load_dataset_builder
 from utils.dataset_utils import get_user_datasets, load_ibl_dataset_locally, split_both_dataset
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from loader.make_loader import make_loader
 from utils.utils import set_seed, dummy_load
 from utils.config_utils import config_from_kwargs, update_config
@@ -28,7 +29,10 @@ BASE_PATH = '/work/hdd/beml/ac136'
 # RESULTS_PATH = "results_kimia_020923/"
 
 DATA_TYPE = "benchmark_datasets"
-RESULTS_PATH = "benchmark_results"
+RESULTS_PATH = os.environ.get(
+    "TRAIN_SESSIONS_RESULTS_PATH",
+    "benchmark_results/gpu_throughput/local",
+)
 
 # Optionally copy and use datasets from a fast tmpfs location.
 # Set `USE_TMP_DATA=1` and optionally `TMP_DATA_DIR` to enable.
@@ -39,6 +43,9 @@ RESULTS_PATH = "benchmark_results"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--eid", type=str, default='c7248e09-8c0d-40f2-9eb4-700a8973d8c8_aligned')
+ap.add_argument("--train-batch-size", type=int, default=None)
+ap.add_argument("--eval-batch-size", type=int, default=None)
+ap.add_argument("--benchmark-repeat-factor", type=int, default=1)
 args = ap.parse_args()
 
 
@@ -55,6 +62,15 @@ kwargs = {
 config = config_from_kwargs(kwargs)
 config = update_config("src/configs/ndt1_stitching.yaml", config)
 config = update_config("src/configs/ssl_session_trainer.yaml", config) # single session
+if args.train_batch_size is not None:
+    config["training"]["train_batch_size"] = args.train_batch_size
+if args.eval_batch_size is not None:
+    config["training"]["test_batch_size"] = args.eval_batch_size
+print(
+    "Effective batch sizes: "
+    f"train={config.training.train_batch_size}, eval={config.training.test_batch_size}"
+)
+print(f"Benchmark repeat factor: {args.benchmark_repeat_factor}")
 
 # config = update_config("src/configs/ssl_sessions_trainer.yaml", config)
 
@@ -76,6 +92,27 @@ train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset_locally(
                             data_type=DATA_TYPE,
                             base_path=BASE_PATH
                             )
+
+def repeat_for_benchmark(dataset, repeat_factor, split_name):
+    if repeat_factor <= 1 or len(dataset) == 0:
+        return dataset
+    repeated_dataset = concatenate_datasets([dataset] * repeat_factor)
+    print(
+        f"Repeated {split_name} dataset for benchmarking: "
+        f"{len(dataset)} -> {len(repeated_dataset)} rows "
+        f"(factor {repeat_factor})."
+    )
+    return repeated_dataset
+
+if args.benchmark_repeat_factor < 1:
+    raise ValueError("--benchmark-repeat-factor must be >= 1")
+
+train_dataset = repeat_for_benchmark(
+    train_dataset, args.benchmark_repeat_factor, "train"
+)
+val_dataset = repeat_for_benchmark(
+    val_dataset, args.benchmark_repeat_factor, "val"
+)
 
 # # download dataset from huggingface
 # eid = None
@@ -103,6 +140,16 @@ train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset_locally(
 #                                                          seed=config.seed)
 
 num_sessions = len(meta_data["eids"])
+gpu_count = int(os.environ.get("GPU_BENCHMARK_GPUS", 1))
+global_train_batch_size = config.training.train_batch_size * gpu_count
+run_name = (
+    f"{eid}_{config.training.num_epochs}epochs"
+    f"_trainbs{config.training.train_batch_size}"
+    f"_evalbs{config.training.test_batch_size}"
+    f"_gpus{gpu_count}"
+    f"_globalbs{global_train_batch_size}"
+    f"_repeat{args.benchmark_repeat_factor}"
+)
 
 log_dir = os.path.join(BASE_PATH, RESULTS_PATH, 
                             "train", 
@@ -111,13 +158,8 @@ log_dir = os.path.join(BASE_PATH, RESULTS_PATH,
                             # "method_{}".format(config.method.model_kwargs.method_name), 
                             # "mask_{}".format(config.encoder.masker.mode),
                             # "stitch_{}".format(config.encoder.stitching), 
-                            "{}".format(eid))
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-        
-print("Meta data: ")
-print(meta_data)
-print()
+                            run_name)
+os.makedirs(log_dir, exist_ok=True)
 
 
 # # make log dir
@@ -166,7 +208,13 @@ val_dataloader = make_loader(val_dataset,
                          shuffle=False)
 
 # Initialize the accelerator
-accelerator = Accelerator()
+ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+
+if accelerator.is_main_process:
+    print("Meta data: ")
+    print(meta_data)
+    print()
 
 # load model
 NAME2MODEL = {"NDT1": NDT1, "STPatch": STPatch}
@@ -174,14 +222,19 @@ NAME2MODEL = {"NDT1": NDT1, "STPatch": STPatch}
 config = update_config(config, meta_data)
 model_class = NAME2MODEL[config.model.model_class]
 model = model_class(config.model, **config.method.model_kwargs, **meta_data)
-model = accelerator.prepare(model)
-
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
+
+model, optimizer, train_dataloader = accelerator.prepare(
+    model,
+    optimizer,
+    train_dataloader,
+)
 lr_scheduler = build_lr_scheduler(
     optimizer=optimizer,
     config=config,
     steps_per_epoch=len(train_dataloader),
 )
+lr_scheduler = accelerator.prepare(lr_scheduler)
 
 trainer_kwargs = {
     "log_dir": log_dir,

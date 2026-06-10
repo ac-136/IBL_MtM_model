@@ -30,6 +30,11 @@ class Trainer():
         # get arguments from kwargs if they exist
         self.log_dir = kwargs.get("log_dir", None)
         self.accelerator = kwargs.get("accelerator", None)
+        self.raw_model = (
+            self.accelerator.unwrap_model(model)
+            if self.accelerator is not None
+            else model
+        )
         self.lr_scheduler = kwargs.get("lr_scheduler", None)
         self.config = kwargs.get("config", None)
         self.stitching = kwargs.get("stitching", None)
@@ -48,8 +53,8 @@ class Trainer():
                 
         self.session_active_neurons = []
 
-        self.masking_ratio = model.encoder.masker.ratio
-        self.masking_mode = model.encoder.masker.mode
+        self.masking_ratio = self.raw_model.encoder.masker.ratio
+        self.masking_mode = self.raw_model.encoder.masker.mode
         self.masking_schemes = ['neuron', 'causal']
         if self.masking_mode == "all":
             if not self.just_spikes:
@@ -67,7 +72,17 @@ class Trainer():
         self.early_stopping_mode = getattr(early_stopping_cfg, "mode", "max")
 
         if self.masking_mode in ["combined", "all"]:
-            print("(train) switch between masking modes: ", self.masking_schemes)
+            self.print("(train) switch between masking modes: ", self.masking_schemes)
+
+    @property
+    def is_main_process(self):
+        return self.accelerator is None or self.accelerator.is_main_process
+
+    def print(self, *args, **kwargs):
+        if self.accelerator is not None:
+            self.accelerator.print(*args, **kwargs)
+        elif self.is_main_process:
+            print(*args, **kwargs)
 
     def train(self):
         best_eval_loss = torch.tensor(float('inf'))
@@ -75,6 +90,9 @@ class Trainer():
         best_monitored_value = None
         epochs_without_improvement = 0
         epoch_durations = []
+        epoch_train_trials = []
+        epoch_trials_per_second = []
+        epoch_trials_per_second_per_gpu = []
         gpu_count = int(os.environ.get("GPU_BENCHMARK_GPUS", 1))
         train_start = time.time()
         # train loop
@@ -85,7 +103,18 @@ class Trainer():
             epoch_duration = time.time() - epoch_start
             epoch_durations.append(epoch_duration)
             epoch_gpu_hours = epoch_duration * gpu_count / 3600.0
-            print(f"epoch: {epoch} train loss: {train_epoch_results['train_loss']} duration: {epoch_duration:.2f}s gpu_hours: {epoch_gpu_hours:.4f}")
+            train_trials = train_epoch_results["train_trials"]
+            trials_per_second = train_trials / epoch_duration if epoch_duration > 0 else 0.0
+            trials_per_second_per_gpu = trials_per_second / gpu_count if gpu_count > 0 else 0.0
+            epoch_train_trials.append(train_trials)
+            epoch_trials_per_second.append(trials_per_second)
+            epoch_trials_per_second_per_gpu.append(trials_per_second_per_gpu)
+            self.print(
+                f"epoch: {epoch} train loss: {train_epoch_results['train_loss']} "
+                f"duration: {epoch_duration:.2f}s gpu_hours: {epoch_gpu_hours:.4f} "
+                f"trials_per_second: {trials_per_second:.2f} "
+                f"trials_per_second_per_gpu: {trials_per_second_per_gpu:.2f}"
+            )
 
             ### Save loss ###
             self.train_losses.append(
@@ -105,11 +134,11 @@ class Trainer():
                 # if eval_epoch_results[f'eval_loss'] < best_eval_loss:
                     best_eval_loss = eval_epoch_results[f'eval_loss']
                     best_eval_trial_avg_metric = eval_epoch_results[f'eval_trial_avg_{self.metric}']
-                    print(f"epoch: {epoch} best eval loss: {best_eval_loss}")
-                    print(f"epoch: {epoch} best eval trial avg {self.metric}: {best_eval_trial_avg_metric}")
+                    self.print(f"epoch: {epoch} best eval loss: {best_eval_loss}")
+                    self.print(f"epoch: {epoch} best eval trial avg {self.metric}: {best_eval_trial_avg_metric}")
                     # save model
                     self.save_model(name="best", epoch=epoch)
-                    if self.config.method.model_kwargs.method_name == 'ssl':
+                    if self.is_main_process and self.config.method.model_kwargs.method_name == 'ssl':
                         gt_pred_fig = self.plot_epoch(
                             gt=eval_epoch_results['eval_gt'][0], 
                             preds=eval_epoch_results['eval_preds'][0], epoch=epoch,
@@ -129,7 +158,7 @@ class Trainer():
                             os.path.join(self.log_dir, f"best_r2_fig_{epoch}.png")
                         )
 
-                print(f"epoch: {epoch} eval loss: {eval_epoch_results['eval_loss']} {self.metric}: {eval_epoch_results[f'eval_trial_avg_{self.metric}']}")
+                self.print(f"epoch: {epoch} eval loss: {eval_epoch_results['eval_loss']} {self.metric}: {eval_epoch_results[f'eval_trial_avg_{self.metric}']}")
 
                 if self.early_stopping_enabled:
                     monitored_value = eval_epoch_results[self.early_stopping_monitor]
@@ -138,13 +167,13 @@ class Trainer():
                     if improved:
                         best_monitored_value = monitored_value
                         epochs_without_improvement = 0
-                        print(
+                        self.print(
                             f"epoch: {epoch} early stopping monitor improved "
                             f"({self.early_stopping_monitor}={monitored_value})"
                         )
                     else:
                         epochs_without_improvement += 1
-                        print(
+                        self.print(
                             f"epoch: {epoch} no early stopping improvement for "
                             f"{epochs_without_improvement} epoch(s)"
                         )
@@ -155,7 +184,7 @@ class Trainer():
 
             # plot epoch
             if epoch % self.config.training.save_plot_every_n_epochs == 0:
-                if self.config.method.model_kwargs.method_name == 'ssl':
+                if self.is_main_process and self.config.method.model_kwargs.method_name == 'ssl':
 
                     gt_pred_fig = self.plot_epoch(
                         gt=eval_epoch_results['eval_gt'][0], 
@@ -181,7 +210,7 @@ class Trainer():
                 and eval_epoch_results
                 and epochs_without_improvement >= self.early_stopping_patience
             ):
-                print(
+                self.print(
                     f"Early stopping triggered at epoch {epoch}. "
                     f"Best {self.early_stopping_monitor}: {best_monitored_value}"
                 )
@@ -207,24 +236,33 @@ class Trainer():
             "avg_gpu_hours_per_epoch": total_gpu_hours / len(epoch_durations) if len(epoch_durations) > 0 else 0.0,
             "epoch_durations_s": epoch_durations,
             "epoch_gpu_hours": [d * gpu_count / 3600.0 for d in epoch_durations],
+            "epoch_train_trials": epoch_train_trials,
+            "epoch_trials_per_second": epoch_trials_per_second,
+            "epoch_trials_per_second_per_gpu": epoch_trials_per_second_per_gpu,
+            "avg_trials_per_second": np.mean(epoch_trials_per_second).item() if len(epoch_trials_per_second) > 0 else 0.0,
+            "avg_trials_per_second_per_gpu": np.mean(epoch_trials_per_second_per_gpu).item() if len(epoch_trials_per_second_per_gpu) > 0 else 0.0,
+            "avg_trials_per_second_excluding_epoch_0": np.mean(epoch_trials_per_second[1:]).item() if len(epoch_trials_per_second) > 1 else 0.0,
+            "avg_trials_per_second_per_gpu_excluding_epoch_0": np.mean(epoch_trials_per_second_per_gpu[1:]).item() if len(epoch_trials_per_second_per_gpu) > 1 else 0.0,
         }
         benchmark_path = os.path.join(self.log_dir, "benchmark.json")
-        with open(benchmark_path, "w") as f:
-            json.dump(benchmark, f, indent=2)
-        print(f"Saved GPU benchmark to {benchmark_path}")
+        if self.is_main_process:
+            with open(benchmark_path, "w") as f:
+                json.dump(benchmark, f, indent=2)
+            self.print(f"Saved GPU benchmark to {benchmark_path}")
         
         # if self.config.wandb.use:
         #     wandb.log({"best_eval_loss": best_eval_loss,
         #                f"best_eval_trial_avg_{self.metric}": best_eval_trial_avg_metric})
 
         ### Save loss as npz ###
-        loss_save_path = os.path.join(self.log_dir, "loss")
-        os.makedirs(loss_save_path, exist_ok=True)
-        np.savez(
-            os.path.join(loss_save_path, "loss_history.npz"),
-            train_loss=np.array(self.train_losses),
-            eval_loss=np.array(self.eval_losses),
-        )
+        if self.is_main_process:
+            loss_save_path = os.path.join(self.log_dir, "loss")
+            os.makedirs(loss_save_path, exist_ok=True)
+            np.savez(
+                os.path.join(loss_save_path, "loss_history.npz"),
+                train_loss=np.array(self.train_losses),
+                eval_loss=np.array(self.eval_losses),
+            )
 
     def _is_improvement(self, current_value, best_value):
         if best_value is None:
@@ -239,34 +277,54 @@ class Trainer():
     def train_epoch(self, epoch):
         train_loss = 0.
         train_examples = 0
+        train_trials = 0
         self.model.train()
-        for batch in tqdm(self.train_dataloader):
+        disable_tqdm = self.accelerator is not None and not self.accelerator.is_local_main_process
+        for batch in tqdm(self.train_dataloader, disable=disable_tqdm):
             if self.masking_mode in ["combined", "all"]:
                 masking_mode = random.sample(self.masking_schemes, 1)[0]
                 if masking_mode == 'temporal':
-                    self.model.encoder.masker.ratio = 0.3
+                    self.raw_model.encoder.masker.ratio = 0.3
                 elif masking_mode == 'causal':
-                    self.model.encoder.masker.ratio = 0.6
+                    self.raw_model.encoder.masker.ratio = 0.6
                 else:
-                    self.model.encoder.masker.ratio = self.masking_ratio
+                    self.raw_model.encoder.masker.ratio = self.masking_ratio
             else:
                 masking_mode = self.masking_mode
             # print(f"masking: {masking_mode}")
             outputs = self._forward_model_outputs(batch, masking_mode)
             loss = outputs.loss
-            loss.backward()
+            if self.accelerator is not None:
+                self.accelerator.backward(loss)
+            else:
+                loss.backward()
             self.optimizer.step()
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
             self.optimizer.zero_grad()
             train_loss += loss.item()
             train_examples += outputs.n_examples
+            train_trials += batch['spikes_data'].shape[0]
+        if self.accelerator is not None:
+            stats = torch.tensor(
+                [train_loss, train_examples, train_trials],
+                dtype=torch.float64,
+                device=self.accelerator.device,
+            )
+            stats = self.accelerator.reduce(stats, reduction="sum")
+            train_loss = stats[0].item()
+            train_examples = stats[1].item()
+            train_trials = stats[2].item()
         return{
-            "train_loss": train_loss/train_examples
+            "train_loss": train_loss/train_examples,
+            "train_trials": train_trials,
         }
     
     def _forward_model_outputs(self, batch, masking_mode):
         batch = move_batch_to_device(batch, self.accelerator.device)
+        neuron_regions = None
+        if self._uses_neuron_regions(masking_mode):
+            neuron_regions = self._metadata_to_cpu(batch['neuron_regions'])
         return self.model(
             batch['spikes_data'], 
             time_attn_mask=batch['time_attn_mask'],
@@ -274,12 +332,28 @@ class Trainer():
             spikes_timestamps=batch['spikes_timestamps'], 
             spikes_spacestamps=batch['spikes_spacestamps'], 
             targets = batch['target'],
-            neuron_regions=batch['neuron_regions'],
+            neuron_regions=neuron_regions,
             masking_mode=masking_mode, 
             spike_augmentation=self.config.data.spike_augmentation,
             num_neuron=batch['spikes_data'].shape[2],
             eid=batch['eid'][0]  # each batch consists of data from the same eid
         ) 
+
+    def _uses_neuron_regions(self, masking_mode):
+        return masking_mode in ["intra-region", "inter-region"] or bool(
+            getattr(self.raw_model.encoder, "embed_region", False)
+        )
+
+    def _metadata_to_cpu(self, value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu()
+        if isinstance(value, list):
+            return [self._metadata_to_cpu(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._metadata_to_cpu(item) for item in value)
+        if isinstance(value, dict):
+            return {key: self._metadata_to_cpu(item) for key, item in value.items()}
+        return value
     
     def eval_epoch(self):
         self.model.eval()
@@ -298,11 +372,11 @@ class Trainer():
                     if self.masking_mode in ["combined", "all"]:
                         masking_mode = random.sample(self.masking_schemes, 1)[0]
                         if masking_mode == 'temporal':
-                            self.model.encoder.masker.ratio = 0.3
+                            self.raw_model.encoder.masker.ratio = 0.3
                         elif masking_mode == 'causal':
-                            self.model.encoder.masker.ratio = 0.6
+                            self.raw_model.encoder.masker.ratio = 0.6
                         else:
-                            self.model.encoder.masker.ratio = self.masking_ratio
+                            self.raw_model.encoder.masker.ratio = self.masking_ratio
                     else:
                         masking_mode = self.masking_mode
                     outputs = self._forward_model_outputs(batch, masking_mode)
@@ -323,7 +397,7 @@ class Trainer():
             results_list = []
             for idx, num_neuron in enumerate(self.num_neurons):
                 if len(session_results[num_neuron]["gt"]) == 0:
-                    print(
+                    self.print(
                         f"Skipping eval metrics for num_neuron={num_neuron} "
                         "because no validation batches were collected for this bucket."
                     )
@@ -385,10 +459,18 @@ class Trainer():
 
     def save_model(self, name="last", epoch=0):
         # save model
-        print(f"saving model: {name} to {self.log_dir}")
+        if self.accelerator is not None:
+            self.accelerator.wait_for_everyone()
+        if not self.is_main_process:
+            return
+        self.print(f"saving model: {name} to {self.log_dir}")
         dict_config = {
-            "model": self.model,
+            "model": self.raw_model,
             "epoch": epoch,
         }
-        torch.save(dict_config, os.path.join(self.log_dir, f"model_{name}.pt"))
+        save_path = os.path.join(self.log_dir, f"model_{name}.pt")
+        if self.accelerator is not None:
+            self.accelerator.save(dict_config, save_path)
+        else:
+            torch.save(dict_config, save_path)
         

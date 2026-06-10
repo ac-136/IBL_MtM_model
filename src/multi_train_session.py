@@ -1,6 +1,7 @@
 from datasets import load_dataset, load_from_disk, concatenate_datasets, load_dataset_builder
 from utils.dataset_utils import get_user_datasets, load_ibl_dataset_locally, split_both_dataset
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from loader.make_loader import make_loader
 from utils.utils import set_seed, dummy_load
 from utils.config_utils import config_from_kwargs, update_config
@@ -95,12 +96,7 @@ run_name = args.model_name if args.model_name is not None else "num_session_{}".
 log_dir = os.path.join(BASE_PATH, RESULTS_PATH, 
                             "train", 
                             run_name)
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-        
-print("Meta data: ")
-print(meta_data)
-print()
+os.makedirs(log_dir, exist_ok=True)
 
 
 # # make log dir
@@ -149,7 +145,13 @@ val_dataloader = make_loader(val_dataset,
                          shuffle=False)
 
 # Initialize the accelerator
-accelerator = Accelerator()
+ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
+
+if accelerator.is_main_process:
+    print("Meta data: ")
+    print(meta_data)
+    print()
 
 # load model
 NAME2MODEL = {"NDT1": NDT1, "STPatch": STPatch}
@@ -157,14 +159,19 @@ NAME2MODEL = {"NDT1": NDT1, "STPatch": STPatch}
 config = update_config(config, meta_data)
 model_class = NAME2MODEL[config.model.model_class]
 model = model_class(config.model, **config.method.model_kwargs, **meta_data)
-model = accelerator.prepare(model)
-
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
+
+model, optimizer, train_dataloader = accelerator.prepare(
+    model,
+    optimizer,
+    train_dataloader,
+)
 lr_scheduler = build_lr_scheduler(
     optimizer=optimizer,
     config=config,
     steps_per_epoch=len(train_dataloader),
 )
+lr_scheduler = accelerator.prepare(lr_scheduler)
 
 trainer_kwargs = {
     "log_dir": log_dir,
