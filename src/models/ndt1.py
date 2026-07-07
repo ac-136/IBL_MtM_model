@@ -17,20 +17,11 @@ from models.masker import Masker
 
 DEFAULT_CONFIG = "src/configs/ndt1.yaml"
 
-# with open('data/target_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
-
-# with open('data/test_re_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
-
-# with open('data/miv_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
-
-# with open('data/ece_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
-
-with open('data/spike_eids.txt') as file:
+with open('data/target_eids.txt') as file:
     include_eids = [line.rstrip() for line in file]
+
+# with open('data/spike_eids.txt') as file:
+#     include_eids = [line.rstrip() for line in file]
 
 
 @dataclass

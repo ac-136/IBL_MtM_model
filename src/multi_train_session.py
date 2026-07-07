@@ -21,8 +21,8 @@ BASE_PATH = '/work/hdd/beml/ac136'
 # DATA_TYPE = "just_spikes"
 # RESULTS_PATH = "results_og_multi_session"
 
-DATA_TYPE = "benchmark_datasets"
-RESULTS_PATH = "benchmark_results"
+DATA_TYPE = "processed_mtm"
+RESULTS_PATH = "benchmark_results/ms"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--num-sessions", type=int, default=None)

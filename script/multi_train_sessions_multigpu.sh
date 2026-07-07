@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=benchmark-ms
-#SBATCH --output=benchmark-ms-%j.out
-#SBATCH --error=benchmark-ms-%j.err
+#SBATCH --job-name=benchmark-ms-mg
+#SBATCH --output=benchmark-ms-mg-%j.out
+#SBATCH --error=benchmark-ms-mg-%j.err
 
 #SBATCH -t 10:00:00
 
@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --account=beml-dtai-gh
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 
 . ~/.bashrc
 conda activate mtm
@@ -49,7 +49,7 @@ fi
 export GPU_BENCHMARK_GPUS=$gpu_count
 
 RUN_ID=${SLURM_JOB_ID:-local}
-RUN_NAME="${MODEL_NAME:-multi_train}"
+RUN_NAME="${MODEL_NAME:-multi_train_mg}"
 benchmark_file="gpu_benchmark_${RUN_NAME}_${RUN_ID}.txt"
 gpu_monitor_file="gpu_util_${RUN_NAME}_${RUN_ID}.csv"
 gpu_monitor_pid=""
@@ -57,7 +57,7 @@ start_time=$(date +%s)
 status="running"
 exit_code=0
 
-cmd=(srun python src/multi_train_session.py)
+cmd=(accelerate launch --num_processes "$gpu_count" --num_machines 1 src/multi_train_session.py)
 
 if [ -n "$NUM_SESSIONS" ]; then
     cmd+=(--num-sessions "$NUM_SESSIONS")
@@ -170,7 +170,8 @@ record_interrupt() {
 trap 'record_interrupt 130' INT
 trap 'record_interrupt 143' TERM
 
-printf 'Launching multi-session training with command:\n%s\n' "$(command_string "${cmd[@]}")"
+printf 'Launching multi-session multi-GPU training with command:\n%s\n' "$(command_string "${cmd[@]}")"
+echo "GPUs: $gpu_count"
 
 start_gpu_monitor
 "${cmd[@]}"
