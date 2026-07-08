@@ -1,43 +1,36 @@
-from datasets import load_dataset, load_from_disk, concatenate_datasets, load_dataset_builder
-from utils.dataset_utils import get_user_datasets, load_ibl_dataset_locally, split_both_dataset
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from loader.make_loader import make_loader
-from utils.utils import set_seed, dummy_load
+from utils.utils import set_seed
 from utils.config_utils import config_from_kwargs, update_config
-from utils.dataset_utils import get_data_from_h5
+from utils.dataset_utils import load_ibl_dataset_locally
 from models.ndt1 import NDT1
 from models.stpatch import STPatch
 import torch
-import numpy as np
 import os
 from trainer.make import make_trainer
-import threading
 import argparse
 from utils.optimizer_utils import build_lr_scheduler
 
 JUST_SPIKES = True
-BASE_PATH = '/work/hdd/beml/ac136'
-# DATA_TYPE = "just_spikes"
-# RESULTS_PATH = "results_og_multi_session"
-
-DATA_TYPE = "processed_mtm"
-RESULTS_PATH = "benchmark_results/ms"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--num-sessions", type=int, default=None)
 ap.add_argument("--train-session-eid", nargs="+", default=None)
 ap.add_argument("--model_name", type=str, default=None)
+ap.add_argument("--base-path", type=str, default='/work/hdd/beml/ac136')
+ap.add_argument("--data-type", type=str, default="processed_mtm")
+ap.add_argument("--results-path", type=str, default="benchmark_results/ms")
 args = ap.parse_args()
+
+BASE_PATH = args.base_path
+DATA_TYPE = args.data_type
+RESULTS_PATH = args.results_path
 
 # load config
 kwargs = {
-    # "model": "include:src/configs/ndt1_stitching_prompting.yaml"
     "model": "include:src/configs/ndt1_stitching.yaml"
-
 }
-
-
 config = config_from_kwargs(kwargs)
 config = update_config("src/configs/ndt1_stitching.yaml", config)
 config = update_config("src/configs/ssl_sessions_trainer.yaml", config) # multi session
@@ -54,9 +47,9 @@ set_seed(config.seed)
 train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset_locally(
                             eid=None,
                             num_sessions=config.data.num_sessions,
-                            split_method=config.data.split_method, # predefined
+                            split_method=config.data.split_method,
                             train_session_eid=config.data.train_session_eid,
-                            test_session_eid=config.data.test_session_eid, # []
+                            test_session_eid=config.data.test_session_eid,
                             batch_size=config.training.train_batch_size,
                             eval_batch_size=config.training.test_batch_size,
                             use_re=False,
@@ -65,62 +58,18 @@ train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset_locally(
                             data_type=DATA_TYPE,
                             base_path=BASE_PATH)
 
-# # download dataset from huggingface
-# eid = None
-# train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset(config.dirs.dataset_cache_dir, 
-#                            config.dirs.huggingface_org,
-#                            eid='5dcee0eb-b34d-4652-acc3-d10afc6eae68',
-#                            num_sessions=config.data.num_sessions,
-#                            split_method=config.data.split_method,
-#                            test_session_eid=config.data.test_session_eid,
-#                            batch_size=config.training.train_batch_size,
-#                            use_re=config.data.use_re,
-#                            seed=config.seed)
-# if config.data.use_aligned_test:
-#     # aligned dataset
-#     if eid is None:
-#         test_dataset = load_from_disk(os.path.join('data', config.dirs.behav_dir))
-#         data_columns = ['spikes_sparse_data', 'spikes_sparse_indices', 'spikes_sparse_indptr', 'spikes_sparse_shape']
-#         test_dataset = concatenate_datasets([test_dataset["train"], test_dataset["val"], test_dataset["test"]])
-#         test_dataset = test_dataset.select_columns(data_columns)
-#     else:
-#         aligned_dataset = load_from_disk(os.path.join('data', config.dirs.behav_dir))
-#         aligned_dataset = concatenate_datasets([aligned_dataset["train"], aligned_dataset["val"], aligned_dataset["test"]])
-#         train_dataset, test_dataset = split_both_dataset(aligned_dataset=aligned_dataset,
-#                                                          unaligned_dataset=train_dataset,
-#                                                          seed=config.seed)
-
 num_sessions = len(meta_data["eids"])
 run_name = args.model_name if args.model_name is not None else "num_session_{}".format(num_sessions)
 
-log_dir = os.path.join(BASE_PATH, RESULTS_PATH, 
-                            "train", 
-                            run_name)
+log_dir = os.path.join(BASE_PATH, RESULTS_PATH, "train", run_name)
 os.makedirs(log_dir, exist_ok=True)
 
-
-# # make log dir
-# log_dir = os.path.join(config.dirs.log_dir, 
-#                        "train", 
-#                        "num_session_{}".format(num_sessions), 
-#                        "model_{}".format(config.model.model_class), 
-#                        "method_{}".format(config.method.model_kwargs.method_name), 
-#                        "mask_{}".format(config.encoder.masker.mode),
-#                        "stitch_{}".format(config.encoder.stitching))
-# if not os.path.exists(log_dir):
-#     os.makedirs(log_dir)
-
-# # wandb
-# if config.wandb.use:
-#     import wandb
-#     wandb.init(project=config.wandb.project, entity=config.wandb.entity, config=config, name="train_model_{}_num_session_{}_method_{}_mask_{}_stitch_{}".format(config.model.model_class, num_sessions,config.method.model_kwargs.method_name,config.encoder.masker.mode, config.encoder.stitching))
-
 # make the dataloader (made target None and load_meta False)
-train_dataloader = make_loader(train_dataset, 
+train_dataloader = make_loader(train_dataset,
                          target=None,
                          load_meta=False,
-                         batch_size=config.training.train_batch_size, 
-                         pad_to_right=True, 
+                         batch_size=config.training.train_batch_size,
+                         pad_to_right=True,
                          pad_value=-1.,
                          max_time_length=config.data.max_time_length,
                          max_space_length=config.data.max_space_length,
@@ -130,11 +79,11 @@ train_dataloader = make_loader(train_dataset,
                          stitching=config.encoder.stitching,
                          shuffle=True)
 
-val_dataloader = make_loader(val_dataset, 
+val_dataloader = make_loader(val_dataset,
                          target=None,
                          load_meta=False,
-                         batch_size=config.training.test_batch_size, 
-                         pad_to_right=True, 
+                         batch_size=config.training.test_batch_size,
+                         pad_to_right=True,
                          pad_value=-1.,
                          max_time_length=config.data.max_time_length,
                          max_space_length=config.data.max_space_length,
@@ -188,22 +137,6 @@ trainer = make_trainer(
     **trainer_kwargs,
     **meta_data
 )
-# # Shared variable to signal the dummy load to stop
-# stop_dummy_load = threading.Event()
-# if config.training.dummy:
-#     # This is for HPC GPU usage, to avoid the GPU being idle
-#     print("Running dummy load")
-#     # Run dummy load in a separate thread
-#     dummy_thread = threading.Thread(target=dummy_load, args=(stop_dummy_load,))
-#     dummy_thread.start()
-#     try:
-#         # train loop
-#         trainer.train()
-#     finally:
-#         # Signal the dummy load to stop and wait for the thread to finish
-#         stop_dummy_load.set()
-#         dummy_thread.join()
-# else:
 
 # train loop
 trainer.train()

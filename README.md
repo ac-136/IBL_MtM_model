@@ -36,7 +36,7 @@ We have uploaded both the processed sessions from the IBL dataset and the pre-tr
 
 2. **Start the training process:**
    ```bash
-   source train_sessions.sh
+   source train_sessions_multigpu.sh
    ```
 
 ### Configuration Adjustments
@@ -69,18 +69,11 @@ We have uploaded both the processed sessions from the IBL dataset and the pre-tr
 ### Notes
 The scripts provided are designed for use on a High-Performance Computing (HPC) environment with Slurm. They allow for fine-tuning and evaluation of the model using multiple test sessions.
 
-### Running Multi-Session Fine-Tuning and Evaluation
-1. **Script for Multiple Sessions:**
-   To submit jobs for all test sessions listed in `data/test_re_eids.txt` for fine-tuning and evaluation, use the following command:
-   ```bash
-   source run_finetune_multi_session.sh NDT1 all 10 train-eval
-   ```
-
 ### Running Single Test Session Fine-Tuning and Evaluation
 1. **Script for a Single Session:**
    To execute fine-tuning and evaluation for a specific test session, use the command below. Replace the placeholder for EID with the actual unique ID of the test session.
    ```bash
-   source finetune_eval_multi_session.sh NDT1 all 10 5dcee0eb-b34d-4652-acc3-d10afc6eae68 train-eval
+   source finetune_multigpu.sh NDT1 all 10 5dcee0eb-b34d-4652-acc3-d10afc6eae68 train-eval
    ```
 
 ### Parameters Explanation
@@ -91,23 +84,7 @@ The scripts provided are designed for use on a High-Performance Computing (HPC) 
 - `MODE`: The operation mode (e.g., train, eval, train-eval).
 
 ### Output
-Both scripts load the pre-trained model from the `results` folder and save the evaluation results in `.npy` files.
-
-## Reading Out Results
-
-### Visualizing Results
-1. **Navigate to the script directory:**
-   ```bash
-   cd script
-   ```
-
-2. **Run the visualization script:**
-   ```bash
-   source draw.sh NUM_TRAIN_SESSIONS
-   ```
-
-   This script outputs images visualizing results metrics, which are stored in the `results/table` folder.
-  
+The script loads the pre-trained model from the `results` folder and saves the evaluation results in `.npy` files.
 
 ## Models
 

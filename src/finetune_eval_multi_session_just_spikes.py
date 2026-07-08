@@ -1,20 +1,14 @@
 import argparse
 from math import ceil
-from datasets import load_dataset, load_from_disk, concatenate_datasets, load_dataset_builder
-from utils.dataset_utils import get_user_datasets, load_ibl_dataset_locally, split_both_dataset
-import argparse
-from datasets import load_dataset, load_from_disk, concatenate_datasets
-from utils.dataset_utils import load_ibl_dataset
+from utils.dataset_utils import load_ibl_dataset_locally
 from accelerate import Accelerator
 from loader.make_loader import make_loader
 from utils.utils import set_seed, dummy_load
 from utils.config_utils import config_from_kwargs, update_config
-from utils.dataset_utils import get_data_from_h5
 from models.ndt1 import NDT1
 from models.stpatch import STPatch
 from models.itransformer import iTransformer
 import torch
-import numpy as np
 import os
 from pathlib import Path
 from trainer.make import make_trainer
@@ -26,30 +20,6 @@ warnings.simplefilter("ignore")
 
 JUST_SPIKES = True
 TRAINED = True
-# DATA_TYPE = "processed_miv"
-# RESULTS_PATH = "results_processed_miv"
-
-# DATA_TYPE = "processed_ece/20s_1kT_kin100/seed_420"
-# RESULTS_PATH = "results_ece/20s_1kT_kin100/seed_420"
-
-# DATA_TYPE = "processed_kimia_data"
-# RESULTS_PATH = "results_kimia"
-
-# DATA_TYPE = "processed_qixian_data"
-# RESULTS_PATH = "results_qixian"
-
-# DATA_TYPE = "just_spikes"
-# RESULTS_PATH = "single_session"
-
-# DATA_TYPE = "processed_new_qixian_data/Experiment1"
-# RESULTS_PATH = "new_qixian/Experiment1"
-
-# DATA_TYPE = "processed_wetlab"
-# RESULTS_PATH = "results_wetlab"
-
-DATA_TYPE = "just_spikes"
-RESULTS_PATH = "results_og_multi_session"
-
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--test_eid", type=str, default='51e53aff-1d5d-4182-a684-aba783d50ae5')
@@ -59,8 +29,9 @@ ap.add_argument("--model_name", type=str, default="NDT1")
 ap.add_argument("--prompting", type=str, default="False")
 ap.add_argument("--train", type=str, default="True")
 ap.add_argument("--eval", type=str, default="True")
-# ap.add_argument("--base_path", type=str, default='/mnt/home/yzhang1/ceph')
 ap.add_argument("--base_path", type=str, default='/work/hdd/beml/ac136')
+ap.add_argument("--data-type", type=str, default="just_spikes")
+ap.add_argument("--results-path", type=str, default="results_og_multi_session")
 ap.add_argument("--num_train_sessions", type=int, default=1)
 ap.add_argument('--use_dummy', action='store_true')
 ap.add_argument('--model_path', type=str, default='/work/hdd/beml/ac136/training_og/train/num_session_1/model_NDT1/method_ssl/mask_temporal/stitch_True/5dcee0eb-b34d-4652-acc3-d10afc6eae68/model_best.pt')
@@ -68,6 +39,8 @@ args = ap.parse_args()
 
 eid = args.test_eid
 base_path = args.base_path
+DATA_TYPE = args.data_type
+RESULTS_PATH = args.results_path
 model_acroynm = args.model_name.lower()
 num_train_sessions = args.num_train_sessions
 assert num_train_sessions > 0, 'num_train_sessions should be greater than 0.'
@@ -126,37 +99,29 @@ try:
                             seed=config.seed,
                             just_spikes=JUST_SPIKES,
                             data_type=DATA_TYPE)
-        
+
         if TRAINED:
-            log_dir = os.path.join(base_path, RESULTS_PATH, 
-                            "finetune", 
+            log_dir = os.path.join(base_path, RESULTS_PATH,
+                            "finetune",
                             "model_{}".format(ss_model_name),
                             "{}".format(eid)
                             )
         else:
-            log_dir = os.path.join(base_path, RESULTS_PATH, 
-                                "finetune", 
+            log_dir = os.path.join(base_path, RESULTS_PATH,
+                                "finetune",
                                 "num_session_{}".format(num_train_sessions),
-                                "model_{}".format(config.model.model_class), 
-                                "method_{}".format(config.method.model_kwargs.method_name), 
+                                "model_{}".format(config.model.model_class),
+                                "method_{}".format(config.method.model_kwargs.method_name),
                                 "mask_{}".format(args.mask_mode),
                                 "stitch_{}".format(config.model.encoder.stitching),
                                 "{}".format(eid)
                                 )
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
-        
+
         print("Meta data: ")
         print(meta_data)
         print()
-
-        # if config.wandb.use:
-        #     import wandb
-        #     wandb.init(project=config.wandb.project, 
-        #             entity=config.wandb.entity, 
-        #             config=config, 
-        #             name="finetune_num_session_{}_model_{}_method_{}_mask_{}_stitch_{}_{}".format(num_train_sessions,config.model.model_class, config.method.model_kwargs.method_name,args.mask_mode, config.model.encoder.stitching,eid)
-        #             )
 
         if args.model_name in ["NDT1", "iTransformer"]:
             max_space_length = config.data.max_space_length
@@ -166,16 +131,16 @@ try:
             max_space_length = ceil(max_num_neurons/max_space_F) * max_space_F
         else:
             max_space_length = config.data.max_space_length
-        
+
         meta_data['max_space_length'] = max_space_length
 
         print('encoder max space length:', max_space_length)
-        
-        train_dataloader = make_loader(train_dataset, 
+
+        train_dataloader = make_loader(train_dataset,
                                 target=config.data.target,
                                 load_meta=False,
-                                batch_size=config.training.train_batch_size, 
-                                pad_to_right=True, 
+                                batch_size=config.training.train_batch_size,
+                                pad_to_right=True,
                                 pad_value=-1.,
                                 max_time_length=config.data.max_time_length,
                                 max_space_length=max_space_length,
@@ -184,12 +149,12 @@ try:
                                 sort_by_region=config.data.sort_by_region,
                                 stitching=config.model.encoder.stitching,
                                 shuffle=True)
-        
-        val_dataloader = make_loader(val_dataset, 
+
+        val_dataloader = make_loader(val_dataset,
                                 target=config.data.target,
                                 load_meta=False,
-                                batch_size=config.training.test_batch_size, 
-                                pad_to_right=True, 
+                                batch_size=config.training.test_batch_size,
+                                pad_to_right=True,
                                 pad_value=-1.,
                                 max_time_length=config.data.max_time_length,
                                 max_space_length=max_space_length,
@@ -198,13 +163,13 @@ try:
                                 sort_by_region=config.data.sort_by_region,
                                 stitching=config.model.encoder.stitching,
                                 shuffle=False)
-        
+
         # Initialize the accelerator
         accelerator = Accelerator()
-        
+
         # load model
         NAME2MODEL = {"NDT1": NDT1, "STPatch": STPatch}
-        
+
         config = update_config(config, meta_data)
         model_class = NAME2MODEL[config.model.model_class]
         model = model_class(config.model, **config.method.model_kwargs, **meta_data)
@@ -237,44 +202,16 @@ try:
         else:
             print('Train from scratch.')
 
-
-
-        # ### FREEZE LAYERS ###
-        # for name, param in model.named_parameters():
-        #         param.requires_grad = False
-
-        # # unfreeze final layer
-        # model.decoder[0].weight.requires_grad = True
-        # model.decoder[0].bias.requires_grad = True
-        # model.stitch_decoder.stitch_decoder_dict['300'].weight.requires_grad = True
-        # model.stitch_decoder.stitch_decoder_dict['300'].bias.requires_grad = True
-
-
-        # for name, param in model.named_parameters():
-        #     print(name, param.requires_grad)
-
-        # accelerator = Accelerator()
-        # model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
-        #     model,
-        #     torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-        #                     lr=config.optimizer.lr,
-        #                     weight_decay=config.optimizer.wd,
-        #                     eps=config.optimizer.eps),
-        #     train_dataloader,
-        #     val_dataloader
-        # )
-
-                
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
         lr_scheduler = build_lr_scheduler(
             optimizer=optimizer,
             config=config,
             steps_per_epoch=len(train_dataloader),
         )
-        
+
         print(config)
         print()
-        
+
         trainer_kwargs = {
             "log_dir": log_dir,
             "accelerator": accelerator,
@@ -290,30 +227,24 @@ try:
             **trainer_kwargs,
             **meta_data
         )
-        
+
         # train loop
         trainer.train()
 
     #########################
 
     if args.eval == "True":
-        # import wandb
-        # wandb.init(project=config.wandb.project, 
-        #         entity=config.wandb.entity, 
-        #         config=config, 
-        #         name=f"eval_num_session_{num_train_sessions}_model_{args.model_name}_method_ssl_mask_{args.mask_mode}_stitch_True_{eid}"
-        #         )
         print('Start model evaluation.')
         print('=======================')
-        
+
         mask_name = f"mask_{args.mask_mode}"
         if args.model_name == "NDT2":
             model_name = "STPatch"
         else:
             model_name = args.model_name
-            
+
         n_time_steps = 100
-        
+
         co_smooth = True
         forward_pred = True
 
@@ -323,18 +254,18 @@ try:
         else:
             inter_region = True
             intra_region = True
-        
+
         choice_decoding = False
         continuous_decoding = False
-        
+
         print("Mask name: ", mask_name)
         print()
-        
+
         if args.prompting == "True":
             model_config = f"src/configs/{model_acroynm}_stitching_prompting_eval.yaml"
         else:
             model_config = f"src/configs/{model_acroynm}_stitching_eval.yaml"
-        
+
         # load pretrain model
         if args.mask_mode == 'temporal':
             mask_path = 'baseline'
@@ -349,9 +280,8 @@ try:
         configs = {
             'model_config': model_config,
             'model_path': finetune_model_path,
-            # 'model_path': f'{base_path}/{RESULTS_PATH}/finetune/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/model_best.pt',
             'trainer_config': f'src/configs/trainer_{model_acroynm}.yaml',
-            'dataset_path': None, 
+            'dataset_path': None,
             'test_size': 0.2,
             'seed': 42,
             'mask_name': mask_name,
@@ -361,15 +291,11 @@ try:
             'just_spikes': JUST_SPIKES,
             'data_type': DATA_TYPE
         }
-            
+
         # load your model and dataloader
         model, accelerator, dataset, dataloader = load_model_data_local(**configs)
-        
+
         is_aligned = False
-        # if DATA_TYPE == "processed_miv":
-        #     is_aligned = False
-        # else:
-        #     is_aligned = True
 
         if TRAINED:
             save_path = f'{base_path}/{RESULTS_PATH}/eval/{ss_model_name}/{eid}'
@@ -382,50 +308,48 @@ try:
             co_smoothing_configs = {
                 'subtract': 'task',
                 'onset_alignment': [40],
-                'method_name': mask_name, 
+                'method_name': mask_name,
                 'save_path': f'{save_path}/co_smooth',
                 'mode': 'per_neuron',
-                'n_time_steps': n_time_steps,    
+                'n_time_steps': n_time_steps,
                 'is_aligned': is_aligned,
                 'target_regions': None,
                 'n_jobs': 8,
                 'data_type': DATA_TYPE
             }
-        
-            results = co_smoothing_eval(model, 
-                            accelerator, 
-                            dataloader, 
-                            dataset, 
+
+            results = co_smoothing_eval(model,
+                            accelerator,
+                            dataloader,
+                            dataset,
                             **co_smoothing_configs)
             print(results)
-            # wandb.log(results)
-        
+
         # forward prediction
         if forward_pred:
             print('Start forward prediction:')
             results = co_smoothing_configs = {
                 'subtract': 'task',
                 'onset_alignment': [],
-                'method_name': mask_name, 
+                'method_name': mask_name,
                 'save_path': f'{save_path}/forward_pred',
                 'mode': 'forward_pred',
-                'n_time_steps': n_time_steps,    
+                'n_time_steps': n_time_steps,
                 'held_out_list': list(range(90, 100)), # NLB uses 200 ms for fp
                 'is_aligned': is_aligned,
                 'target_regions': None,
                 'n_jobs': 8,
                 'data_type': DATA_TYPE
             }
-        
-            results = co_smoothing_eval(model, 
-                            accelerator, 
-                            dataloader, 
-                            dataset, 
+
+            results = co_smoothing_eval(model,
+                            accelerator,
+                            dataloader,
+                            dataset,
                             **co_smoothing_configs)
             print(results)
-            # wandb.log(results)
-            
-        
+
+
         # inter-region
         if inter_region:
             print('Start inter-region:')
@@ -435,47 +359,45 @@ try:
                 'method_name': mask_name,
                 'save_path': save_path,
                 'mode': 'inter_region',
-                'n_time_steps': n_time_steps,    
+                'n_time_steps': n_time_steps,
                 'held_out_list': None,
                 'is_aligned': True,
                 'target_regions': ['all'],
                 'n_jobs': 8
             }
-        
-            results = co_smoothing_eval(model, 
-                            accelerator, 
-                            dataloader, 
-                            dataset, 
+
+            results = co_smoothing_eval(model,
+                            accelerator,
+                            dataloader,
+                            dataset,
                             **co_smoothing_configs)
             print(results)
-            # wandb.log(results)
 
-        
+
         # intra-region
         if intra_region:
             print('Start intra-region:')
             co_smoothing_configs = {
                 'subtract': 'task',
                 'onset_alignment': [40],
-                'method_name': mask_name, 
+                'method_name': mask_name,
                 'save_path': save_path,
                 'mode': 'intra_region',
-                'n_time_steps': n_time_steps,    
+                'n_time_steps': n_time_steps,
                 'held_out_list': None,
                 'is_aligned': True,
                 'target_regions': ['all'],
                 'n_jobs': 8
             }
-        
-            results = co_smoothing_eval(model, 
-                            accelerator, 
-                            dataloader, 
-                            dataset, 
+
+            results = co_smoothing_eval(model,
+                            accelerator,
+                            dataloader,
+                            dataset,
                             **co_smoothing_configs)
             print(results)
-            # wandb.log(results)
-        
-        
+
+
         if choice_decoding:
             print('Start choice_decoding:')
             configs = {
@@ -496,19 +418,18 @@ try:
                 'num_train_sessions': num_train_sessions,
                 'use_logreg': True,
                 'use_trial_filter': True,
-            }  
+            }
             results = behavior_decoding(**configs)
             print(results)
-            # wandb.log(results)
-        
-        
+
+
         if continuous_decoding:
             print('Start continuous_decoding:')
             configs = {
                 'model_config': model_config,
                 'model_path': f'{base_path}/results/finetune/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/model_best.pt',
                 'trainer_config': f'src/configs/ppwang/trainer_sl_continuous_{model_acroynm}.yaml',
-                'dataset_path': None, 
+                'dataset_path': None,
                 'save_path': f'{base_path}/results/eval/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/continuous_decoding',
                 'test_size': 0.2,
                 'seed': 42,
@@ -522,10 +443,9 @@ try:
                 'num_train_sessions': num_train_sessions,
                 'use_logreg': True,
                 'use_trial_filter': True
-            }  
+            }
             results = behavior_decoding(**configs)
             print(results)
-            # wandb.log(results)
 
 finally:
     if args.use_dummy:

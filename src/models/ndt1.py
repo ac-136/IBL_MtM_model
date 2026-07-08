@@ -20,10 +20,6 @@ DEFAULT_CONFIG = "src/configs/ndt1.yaml"
 with open('data/target_eids.txt') as file:
     include_eids = [line.rstrip() for line in file]
 
-# with open('data/spike_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
-
-
 @dataclass
 class NDT1Output(ModelOutput):
     loss: Optional[torch.FloatTensor] = None

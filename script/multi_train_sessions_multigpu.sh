@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=benchmark-ms-mg
-#SBATCH --output=benchmark-ms-mg-%j.out
-#SBATCH --error=benchmark-ms-mg-%j.err
+#SBATCH --job-name=ms-mg
+#SBATCH --output=../results/%x-%j.out
+#SBATCH --error=../results/%x-%j.err
 
 #SBATCH -t 10:00:00
 
@@ -48,16 +48,19 @@ if ! [ "${gpu_count}" -ge 1 ] 2>/dev/null; then
 fi
 export GPU_BENCHMARK_GPUS=$gpu_count
 
-RUN_ID=${SLURM_JOB_ID:-local}
-RUN_NAME="${MODEL_NAME:-multi_train_mg}"
-benchmark_file="gpu_benchmark_${RUN_NAME}_${RUN_ID}.txt"
-gpu_monitor_file="gpu_util_${RUN_NAME}_${RUN_ID}.csv"
-gpu_monitor_pid=""
-start_time=$(date +%s)
-status="running"
-exit_code=0
+HF_CACHE_DIR="/tmp/hf_datasets_cache_${SLURM_JOB_ID:-$$}"
+mkdir -p "$HF_CACHE_DIR"
+export HF_HOME="$HF_CACHE_DIR"
+export HF_DATASETS_CACHE="$HF_CACHE_DIR/datasets"
 
-cmd=(accelerate launch --num_processes "$gpu_count" --num_machines 1 src/multi_train_session.py)
+BASE_PATH="/work/hdd/beml/ac136"
+DATA_TYPE="processed_mtm"
+RESULTS_PATH="benchmark_results/ms"
+
+cmd=(accelerate launch --num_processes "$gpu_count" --num_machines 1 src/multi_train_session.py \
+    --base-path "$BASE_PATH" \
+    --data-type "$DATA_TYPE" \
+    --results-path "$RESULTS_PATH")
 
 if [ -n "$NUM_SESSIONS" ]; then
     cmd+=(--num-sessions "$NUM_SESSIONS")
@@ -71,118 +74,13 @@ if [ ${#TRAIN_SESSION_EIDS[@]} -gt 0 ]; then
     cmd+=(--train-session-eid "${TRAIN_SESSION_EIDS[@]}")
 fi
 
-iso_time() {
-    date -d "@$1" --iso-8601=seconds 2>/dev/null || date -u -r "$1" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u
-}
-
-command_string() {
-    printf "%q " "$@"
-}
-
-start_gpu_monitor() {
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        nvidia-smi \
-            --query-gpu=timestamp,index,name,utilization.gpu,utilization.memory,memory.used,power.draw \
-            --format=csv \
-            -l 1 > "${gpu_monitor_file}" &
-        gpu_monitor_pid=$!
-        echo "GPU utilization monitor writing to ${gpu_monitor_file}"
-    else
-        gpu_monitor_file="unavailable"
-    fi
-}
-
-stop_gpu_monitor() {
-    if [ -n "${gpu_monitor_pid}" ]; then
-        kill "${gpu_monitor_pid}" 2>/dev/null || true
-        wait "${gpu_monitor_pid}" 2>/dev/null || true
-        gpu_monitor_pid=""
-    fi
-}
-
-gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | paste -sd "|" -)
-if [ -z "${gpu_name}" ]; then
-    gpu_name="unavailable"
-fi
-nvidia_driver_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n 1)
-if [ -z "${nvidia_driver_version}" ]; then
-    nvidia_driver_version="unavailable"
-fi
-python_version=$(python -c 'import sys; print(sys.version.split()[0])' 2>/dev/null || echo "unavailable")
-torch_version=$(python -c 'import torch; print(torch.__version__)' 2>/dev/null || echo "unavailable")
-torch_cuda_version=$(python -c 'import torch; print(torch.version.cuda or "unavailable")' 2>/dev/null || echo "unavailable")
-git_commit=$(git rev-parse HEAD 2>/dev/null || echo "unavailable")
-git_status=$(git status --short 2>/dev/null | wc -l | tr -d ' ' || echo "unavailable")
-hostname_value=$(hostname 2>/dev/null || echo "unavailable")
-repo_dir=$(pwd)
-train_session_eids_string="${TRAIN_SESSION_EIDS[*]}"
-
-write_benchmark() {
-    local end_time duration gpu_hours
-    end_time=$(date +%s)
-    duration=$((end_time - start_time))
-    gpu_hours=$(python - <<PYTHON
-print(${duration} * ${gpu_count} / 3600.0)
-PYTHON
-)
-
-    cat > "${benchmark_file}" <<EOF
-run_name: ${RUN_NAME}
-run_id: ${RUN_ID}
-num_sessions: ${NUM_SESSIONS}
-train_session_eids: ${train_session_eids_string}
-status: ${status}
-exit_code: ${exit_code}
-command: $(command_string "${cmd[@]}")
-repo_dir: ${repo_dir}
-git_commit: ${git_commit}
-git_dirty_files: ${git_status}
-hostname: ${hostname_value}
-python_version: ${python_version}
-torch_version: ${torch_version}
-torch_cuda_version: ${torch_cuda_version}
-slurm_job_id: ${SLURM_JOB_ID:-}
-slurm_job_name: ${SLURM_JOB_NAME:-}
-slurm_partition: ${SLURM_JOB_PARTITION:-}
-slurm_nodelist: ${SLURM_JOB_NODELIST:-}
-start_time: $(iso_time "${start_time}")
-end_time: $(iso_time "${end_time}")
-duration_s: ${duration}
-gpus: ${gpu_count}
-gpu_name: ${gpu_name}
-nvidia_driver_version: ${nvidia_driver_version}
-gpu_hours_run: ${gpu_hours}
-gpu_monitor_file: ${gpu_monitor_file}
-EOF
-    echo "GPU benchmark written to ${benchmark_file}"
-}
-
-record_interrupt() {
-    exit_code=$1
-    status="interrupted"
-    stop_gpu_monitor
-    write_benchmark
-    cd script 2>/dev/null || true
-    conda deactivate 2>/dev/null || true
-    exit "${exit_code}"
-}
-
-trap 'record_interrupt 130' INT
-trap 'record_interrupt 143' TERM
-
-printf 'Launching multi-session multi-GPU training with command:\n%s\n' "$(command_string "${cmd[@]}")"
+printf 'Launching multi-session multi-GPU training with command:\n%s\n' "$(printf '%q ' "${cmd[@]}")"
 echo "GPUs: $gpu_count"
 
-start_gpu_monitor
 "${cmd[@]}"
 exit_code=$?
-stop_gpu_monitor
-if [ "${exit_code}" -eq 0 ]; then
-    status="success"
-else
-    status="failed"
-fi
-write_benchmark
+
+rm -rf "$HF_CACHE_DIR"
 
 cd script
 

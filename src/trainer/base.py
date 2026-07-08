@@ -3,7 +3,6 @@ import numpy as np
 # import wandb
 import os
 import time
-import json
 from utils.utils import move_batch_to_device, metrics_list, plot_gt_pred, plot_neurons_r2
 from tqdm import tqdm
 import random
@@ -90,9 +89,6 @@ class Trainer():
         best_monitored_value = None
         epochs_without_improvement = 0
         epoch_durations = []
-        epoch_train_trials = []
-        epoch_trials_per_second = []
-        epoch_trials_per_second_per_gpu = []
         gpu_count = int(os.environ.get("GPU_BENCHMARK_GPUS", 1))
         train_start = time.time()
         # train loop
@@ -103,18 +99,7 @@ class Trainer():
             epoch_duration = time.time() - epoch_start
             epoch_durations.append(epoch_duration)
             epoch_gpu_hours = epoch_duration * gpu_count / 3600.0
-            train_trials = train_epoch_results["train_trials"]
-            trials_per_second = train_trials / epoch_duration if epoch_duration > 0 else 0.0
-            trials_per_second_per_gpu = trials_per_second / gpu_count if gpu_count > 0 else 0.0
-            epoch_train_trials.append(train_trials)
-            epoch_trials_per_second.append(trials_per_second)
-            epoch_trials_per_second_per_gpu.append(trials_per_second_per_gpu)
-            self.print(
-                f"epoch: {epoch} train loss: {train_epoch_results['train_loss']} "
-                f"duration: {epoch_duration:.2f}s gpu_hours: {epoch_gpu_hours:.4f} "
-                f"trials_per_second: {trials_per_second:.2f} "
-                f"trials_per_second_per_gpu: {trials_per_second_per_gpu:.2f}"
-            )
+            self.print(f"epoch: {epoch} train loss: {train_epoch_results['train_loss']} gpu_hours: {epoch_gpu_hours:.4f}")
 
             ### Save loss ###
             self.train_losses.append(
@@ -227,29 +212,15 @@ class Trainer():
         # save last model
         self.save_model(name="last", epoch=epoch)
         total_duration = time.time() - train_start
-        total_gpu_hours = total_duration * gpu_count / 3600.0
-        benchmark = {
-            "num_epochs_completed": len(epoch_durations),
-            "total_duration_s": total_duration,
-            "total_gpu_count": gpu_count,
-            "total_gpu_hours": total_gpu_hours,
-            "avg_gpu_hours_per_epoch": total_gpu_hours / len(epoch_durations) if len(epoch_durations) > 0 else 0.0,
-            "epoch_durations_s": epoch_durations,
-            "epoch_gpu_hours": [d * gpu_count / 3600.0 for d in epoch_durations],
-            "epoch_train_trials": epoch_train_trials,
-            "epoch_trials_per_second": epoch_trials_per_second,
-            "epoch_trials_per_second_per_gpu": epoch_trials_per_second_per_gpu,
-            "avg_trials_per_second": np.mean(epoch_trials_per_second).item() if len(epoch_trials_per_second) > 0 else 0.0,
-            "avg_trials_per_second_per_gpu": np.mean(epoch_trials_per_second_per_gpu).item() if len(epoch_trials_per_second_per_gpu) > 0 else 0.0,
-            "avg_trials_per_second_excluding_epoch_0": np.mean(epoch_trials_per_second[1:]).item() if len(epoch_trials_per_second) > 1 else 0.0,
-            "avg_trials_per_second_per_gpu_excluding_epoch_0": np.mean(epoch_trials_per_second_per_gpu[1:]).item() if len(epoch_trials_per_second_per_gpu) > 1 else 0.0,
-        }
-        benchmark_path = os.path.join(self.log_dir, "benchmark.json")
+        all_epoch_gpu_hours = [d * gpu_count / 3600.0 for d in epoch_durations]
+        avg_gpu_hours_per_epoch = (
+            sum(all_epoch_gpu_hours) / len(all_epoch_gpu_hours) if all_epoch_gpu_hours else 0.0
+        )
         if self.is_main_process:
-            with open(benchmark_path, "w") as f:
-                json.dump(benchmark, f, indent=2)
-            self.print(f"Saved GPU benchmark to {benchmark_path}")
-        
+            self.print("=== GPU benchmark ===")
+            self.print(f"avg_gpu_hours_per_epoch: {avg_gpu_hours_per_epoch:.4f}")
+            self.print(f"total_duration_s: {total_duration:.2f}")
+
         # if self.config.wandb.use:
         #     wandb.log({"best_eval_loss": best_eval_loss,
         #                f"best_eval_trial_avg_{self.metric}": best_eval_trial_avg_metric})
