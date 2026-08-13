@@ -45,9 +45,9 @@ if [[ $MODE == *"eval"* ]]; then
     EVAL=True
 fi
 
-BASE_PATH="/work/hdd/beml/ac136"
-DATA_TYPE="just_spikes"
-RESULTS_PATH="results_og_multi_session"
+BASE_PATH="/work/nvme/beml/ac136/IBL_MTM/data"
+DATA_TYPE="processed_mtm"
+RESULTS_PATH="/work/nvme/beml/ac136/IBL_MTM/results/mtm"
 
 cd ..
 
@@ -73,21 +73,43 @@ echo "Test eid: $TEST_EID"
 echo "Single session model name: $MODEL_PATH"
 echo "GPUs: $gpu_count"
 
-accelerate launch --num_processes "$gpu_count" --num_machines 1 \
-    src/finetune_eval_multi_session_just_spikes.py --mask_ratio 0.3 \
-                         --mask_mode $MASK_MODE \
-                         --model_name $MODEL_NAME \
-                         --prompting $PROMPTING \
-                         --train $TRAIN \
-                         --eval $EVAL \
-                         --base_path $BASE_PATH \
-                         --data-type $DATA_TYPE \
-                         --results-path $RESULTS_PATH \
-                         --num_train_sessions $NUM_TRAIN_SESSIONS \
-                         --test_eid $TEST_EID \
-                         --model_path $MODEL_PATH \
-                         --use_dummy
-exit_code=$?
+exit_code=0
+
+if [ "$TRAIN" == "True" ]; then
+    echo "Running finetune training on $gpu_count GPU(s)..."
+    accelerate launch --num_processes "$gpu_count" --num_machines 1 \
+        src/finetune_eval_multi_session_just_spikes.py --mask_ratio 0.3 \
+                             --mask_mode $MASK_MODE \
+                             --model_name $MODEL_NAME \
+                             --prompting $PROMPTING \
+                             --train True \
+                             --eval False \
+                             --base_path $BASE_PATH \
+                             --data-type $DATA_TYPE \
+                             --results-path $RESULTS_PATH \
+                             --num_train_sessions $NUM_TRAIN_SESSIONS \
+                             --test_eid $TEST_EID \
+                             --model_path $MODEL_PATH
+    exit_code=$?
+fi
+
+if [ "$EVAL" == "True" ] && [ "$exit_code" -eq 0 ]; then
+    echo "Running evaluation on a single GPU..."
+    CUDA_VISIBLE_DEVICES=0 python \
+        src/finetune_eval_multi_session_just_spikes.py --mask_ratio 0.3 \
+                             --mask_mode $MASK_MODE \
+                             --model_name $MODEL_NAME \
+                             --prompting $PROMPTING \
+                             --train False \
+                             --eval True \
+                             --base_path $BASE_PATH \
+                             --data-type $DATA_TYPE \
+                             --results-path $RESULTS_PATH \
+                             --num_train_sessions $NUM_TRAIN_SESSIONS \
+                             --test_eid $TEST_EID \
+                             --model_path $MODEL_PATH
+    exit_code=$?
+fi
 
 rm -rf "$HF_CACHE_DIR"
 

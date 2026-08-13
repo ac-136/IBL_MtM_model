@@ -11,6 +11,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --account=beml-dtai-gh
+#SBATCH --gpus-per-node=1
 
 EID_LIST="${1:-../data/mtm_overlap_eids.txt}"
 
