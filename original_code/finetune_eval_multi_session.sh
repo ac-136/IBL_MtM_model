@@ -1,22 +1,19 @@
 #!/bin/bash
 
-#SBATCH --job-name=single-session-finetune-eval
-#SBATCH --output=single-session-finetune-eval-%j.out
-#SBATCH --error=single-session-finetune-eval-%j.err
+#SBATCH --job-name=multi-session
+#SBATCH --output=multi-session-%j.out
+#SBATCH --error=multi-session-%j.err
 
 #SBATCH --time=04:00:00
-
 #SBATCH --mem=64g
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --account=beml-dtai-gh
 #SBATCH --gpus-per-node=1
 
-START_TIME=$(date +%s)
-
 . ~/.bashrc
-conda activate mtm
+conda activate og_base
 
 # Check python path
 echo "Conda prefix: $CONDA_PREFIX"
@@ -27,8 +24,6 @@ MASK_MODE=${2}
 NUM_TRAIN_SESSIONS=${3}
 TEST_EID=${4}
 MODE=${5}
-MODEL_PATH=${6}
-OUTPUT_MODEL_NAME=${7:-mtm-baseline-34-sessions_test}
 
 TRAIN=False
 EVAL=FALSE
@@ -50,9 +45,7 @@ if [[ $MODE == *"eval"* ]]; then
     EVAL=True
 fi
 
-BASE_PATH="/work/nvme/beml/ac136/IBL_MTM/data"
-DATA_TYPE="processed_mtm"
-RESULTS_PATH="/work/nvme/beml/ac136/IBL_MTM/results/mtm"
+BASE_PATH="/work/hdd/beml/ac136"
 
 echo "Mask mode: $MASK_MODE"
 echo "Model name: $MODEL_NAME"
@@ -60,12 +53,8 @@ echo "Prompting: $PROMPTING"
 echo "Train: $TRAIN"
 echo "Eval: $EVAL"
 echo "Base path: $BASE_PATH"
-echo "Data type: $DATA_TYPE"
-echo "Results path: $RESULTS_PATH"
-echo "Output model name: $OUTPUT_MODEL_NAME"
 echo "Num train sessions: $NUM_TRAIN_SESSIONS"
 echo "Test eid: $TEST_EID"
-echo "Single session model name: $MODEL_PATH"
 
 cd ../
 
@@ -77,19 +66,10 @@ python src/finetune_eval_multi_session_just_spikes.py --mask_ratio 0.3 \
                          --train $TRAIN \
                          --eval $EVAL \
                          --base_path $BASE_PATH \
-                         --data-type $DATA_TYPE \
-                         --results-path $RESULTS_PATH \
-                         --output-model-name $OUTPUT_MODEL_NAME \
                          --num_train_sessions $NUM_TRAIN_SESSIONS \
                          --test_eid $TEST_EID \
-                         --model_path $MODEL_PATH \
                          --use_dummy
-
 
 cd script
 
 conda deactivate
-
-END_TIME=$(date +%s)
-RUNTIME=$((END_TIME - START_TIME))
-echo "Runtime (seconds): $RUNTIME"
