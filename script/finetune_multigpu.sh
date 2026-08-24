@@ -6,7 +6,7 @@
 
 #SBATCH --time=04:00:00
 
-#SBATCH --mem=64g
+#SBATCH --mem=128g
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
@@ -26,6 +26,7 @@ NUM_TRAIN_SESSIONS=${3}
 TEST_EID=${4}
 MODE=${5}
 MODEL_PATH=${6}
+OUTPUT_MODEL_NAME=${7:-mtm-baseline-34-sessions_test_no_trim}
 
 TRAIN=False
 EVAL=FALSE
@@ -45,9 +46,9 @@ if [[ $MODE == *"eval"* ]]; then
     EVAL=True
 fi
 
-BASE_PATH="/work/hdd/beml/ac136"
-DATA_TYPE="just_spikes"
-RESULTS_PATH="results_og_multi_session"
+BASE_PATH="/work/nvme/beml/ac136/IBL_MTM/data"
+DATA_TYPE="processed_mtm"
+RESULTS_PATH="/work/nvme/beml/ac136/IBL_MTM/results/mtm"
 
 cd ..
 
@@ -68,6 +69,9 @@ echo "Prompting: $PROMPTING"
 echo "Train: $TRAIN"
 echo "Eval: $EVAL"
 echo "Base path: $BASE_PATH"
+echo "Data type: $DATA_TYPE"
+echo "Results path: $RESULTS_PATH"
+echo "Output model name: $OUTPUT_MODEL_NAME"
 echo "Num train sessions: $NUM_TRAIN_SESSIONS"
 echo "Test eid: $TEST_EID"
 echo "Single session model name: $MODEL_PATH"
@@ -83,10 +87,10 @@ accelerate launch --num_processes "$gpu_count" --num_machines 1 \
                          --base_path $BASE_PATH \
                          --data-type $DATA_TYPE \
                          --results-path $RESULTS_PATH \
+                         --output-model-name $OUTPUT_MODEL_NAME \
                          --num_train_sessions $NUM_TRAIN_SESSIONS \
                          --test_eid $TEST_EID \
-                         --model_path $MODEL_PATH \
-                         --use_dummy
+                         --model_path $MODEL_PATH
 exit_code=$?
 
 rm -rf "$HF_CACHE_DIR"

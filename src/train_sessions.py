@@ -55,7 +55,6 @@ train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset_locally(
                             train_session_eid=[eid],
                             test_session_eid=config.data.test_session_eid,
                             batch_size=config.training.train_batch_size,
-                            eval_batch_size=config.training.test_batch_size,
                             seed=config.seed,
                             just_spikes=JUST_SPIKES,
                             data_type=DATA_TYPE,

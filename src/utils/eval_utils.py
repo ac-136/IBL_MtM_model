@@ -46,6 +46,7 @@ def load_model_data_local(**kwargs):
     num_sessions = kwargs['num_sessions']
     just_spikes = kwargs['just_spikes']
     data_type = kwargs['data_type']
+    base_path = kwargs.get('base_path', '/work/hdd/beml/ac136')
 
     train_aligned = False
 
@@ -87,11 +88,11 @@ def load_model_data_local(**kwargs):
                             split_method="predefined",
                             test_session_eid=[],
                             batch_size=config.training.train_batch_size,
-                            eval_batch_size=config.training.test_batch_size,
                             seed=seed,
                             eid=eid,
                             just_spikes=just_spikes,
-                            data_type=data_type)
+                            data_type=data_type,
+                            base_path=base_path)
 
     print(meta_data)
     print()
@@ -155,7 +156,7 @@ def load_model_data_local(**kwargs):
     if train_aligned:
         dataset = load_dataset(f'ibl-foundation-model/{eid}_aligned', cache_dir=config.dirs.dataset_cache_dir)["test"]
     else:
-        dir_path = os.path.join("/work/hdd/beml/ac136/", data_type, eid, "data")
+        dir_path = os.path.join(base_path, data_type, eid, "data")
         dataset = load_dataset(
             "parquet",
             data_files={
@@ -716,21 +717,25 @@ def co_smoothing_eval(
         raise NotImplementedError('mode not implemented')
 
     # save co-bps
-    os.makedirs(kwargs['save_path'], exist_ok=True)
+    should_save = accelerator is None or getattr(accelerator, "is_main_process", True)
+    if should_save:
+        os.makedirs(kwargs['save_path'], exist_ok=True)
     bps_all = np.array(bps_result_list)
     bps_mean = np.nanmean(bps_all)
     bps_std = np.nanstd(bps_all)
 
     if len(bps_all) == 0 or np.isnan(bps_all).all():
-        print("Warning: all values are NaN, skipping histogram")
+        if should_save:
+            print("Warning: all values are NaN, skipping histogram")
     else:
-        plt.hist(bps_all[~np.isnan(bps_all)], bins=30, alpha=0.75, color='red', edgecolor='black')
+        if should_save:
+            plt.hist(bps_all[~np.isnan(bps_all)], bins=30, alpha=0.75, color='red', edgecolor='black')
 
-        plt.xlabel('bits per spike')
-        plt.ylabel('count')
-        plt.title('Co-bps distribution\n mean: {:.2f}, std: {:.2f}\n # non-zero neuron: {}'.format(bps_mean, bps_std, len(bps_all)));
-        plt.savefig(os.path.join(kwargs['save_path'], f'bps.png'), dpi=200)
-        np.save(os.path.join(kwargs['save_path'], f'bps.npy'), bps_all)
+            plt.xlabel('bits per spike')
+            plt.ylabel('count')
+            plt.title('Co-bps distribution\n mean: {:.2f}, std: {:.2f}\n # non-zero neuron: {}'.format(bps_mean, bps_std, len(bps_all)));
+            plt.savefig(os.path.join(kwargs['save_path'], f'bps.png'), dpi=200)
+            np.save(os.path.join(kwargs['save_path'], f'bps.npy'), bps_all)
     
     # save R2
     if data_type == "processed_miv":
@@ -743,7 +748,8 @@ def co_smoothing_eval(
         }
     else:
         r2_all = np.array(r2_result_list)
-        np.save(os.path.join(kwargs['save_path'], f'r2.npy'), r2_all)
+        if should_save:
+            np.save(os.path.join(kwargs['save_path'], f'r2.npy'), r2_all)
 
         return {
             f"{mode}_mean_bps": bps_mean,

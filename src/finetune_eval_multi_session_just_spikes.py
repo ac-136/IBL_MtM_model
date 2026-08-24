@@ -2,6 +2,7 @@ import argparse
 from math import ceil
 from utils.dataset_utils import load_ibl_dataset_locally
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from loader.make_loader import make_loader
 from utils.utils import set_seed, dummy_load
 from utils.config_utils import config_from_kwargs, update_config
@@ -13,7 +14,7 @@ import os
 from pathlib import Path
 from trainer.make import make_trainer
 from utils.eval_utils import load_model_data_local, co_smoothing_eval, behavior_decoding
-from utils.optimizer_utils import build_lr_scheduler
+from torch.optim.lr_scheduler import OneCycleLR
 import threading
 import warnings
 warnings.simplefilter("ignore")
@@ -32,12 +33,16 @@ ap.add_argument("--eval", type=str, default="True")
 ap.add_argument("--base_path", type=str, default='/work/hdd/beml/ac136')
 ap.add_argument("--data-type", type=str, default="just_spikes")
 ap.add_argument("--results-path", type=str, default="results_og_multi_session")
+ap.add_argument("--output-model-name", type=str, default=None)
 ap.add_argument("--num_train_sessions", type=int, default=1)
 ap.add_argument('--use_dummy', action='store_true')
 ap.add_argument('--model_path', type=str, default='/work/hdd/beml/ac136/training_og/train/num_session_1/model_NDT1/method_ssl/mask_temporal/stitch_True/5dcee0eb-b34d-4652-acc3-d10afc6eae68/model_best.pt')
 args = ap.parse_args()
 
 eid = args.test_eid
+eid_name = eid[:-len("_aligned")] if eid.endswith("_aligned") else eid
+source_model_name = Path(args.model_path).parent.parent.name
+output_model_name = args.output_model_name or source_model_name
 base_path = args.base_path
 DATA_TYPE = args.data_type
 RESULTS_PATH = args.results_path
@@ -50,9 +55,6 @@ print("Args to finetune_eval_multi_session: ")
 for arg, value in vars(args).items():
     print(f"{arg}: {value}")
 print()
-
-if TRAINED:
-    ss_model_name = Path(args.model_path).parent.name
 
 if args.prompting == "True":
     if args.model_name == 'NDT1':
@@ -77,6 +79,13 @@ config = config_from_kwargs(kwargs)
 config = update_config("src/configs/finetune_sessions_trainer.yaml", config)
 
 set_seed(config.seed)
+ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+accelerator = Accelerator(
+    split_batches=True,
+    even_batches=False,
+    kwargs_handlers=[ddp_kwargs],
+)
+
 # Shared variable to signal the dummy load to stop
 stop_dummy_load = threading.Event()
 if args.use_dummy:
@@ -95,17 +104,13 @@ try:
                             train_session_eid=[eid],
                             test_session_eid=config.data.test_session_eid,
                             batch_size=config.training.train_batch_size,
-                            eval_batch_size=config.training.test_batch_size,
                             seed=config.seed,
                             just_spikes=JUST_SPIKES,
-                            data_type=DATA_TYPE)
+                            data_type=DATA_TYPE,
+                            base_path=base_path)
 
         if TRAINED:
-            log_dir = os.path.join(base_path, RESULTS_PATH,
-                            "finetune",
-                            "model_{}".format(ss_model_name),
-                            "{}".format(eid)
-                            )
+            log_dir = os.path.join(base_path, RESULTS_PATH, output_model_name, "finetune", eid_name)
         else:
             log_dir = os.path.join(base_path, RESULTS_PATH,
                                 "finetune",
@@ -164,16 +169,12 @@ try:
                                 stitching=config.model.encoder.stitching,
                                 shuffle=False)
 
-        # Initialize the accelerator
-        accelerator = Accelerator()
-
         # load model
         NAME2MODEL = {"NDT1": NDT1, "STPatch": STPatch}
 
         config = update_config(config, meta_data)
         model_class = NAME2MODEL[config.model.model_class]
         model = model_class(config.model, **config.method.model_kwargs, **meta_data)
-        model = accelerator.prepare(model)
 
         # load pretrain model
         if args.mask_mode == 'temporal':
@@ -187,26 +188,34 @@ try:
             pretrain_model_path = f'{base_path}/models/ibl-foundation-model__multi-{args.model_name}-{mask_path}-{num_train_sessions}-sessions/model_best.pt'
 
 
-        if num_train_sessions > 1:
+        if TRAINED or num_train_sessions > 1:
             print('\nLoad pretrain model from:', pretrain_model_path)
             print()
             # load weights that can be found in the pretrain model
             if DATA_TYPE != "datasets":
-                ckpt = torch.load(pretrain_model_path)['model'].state_dict()
+                ckpt = torch.load(pretrain_model_path, map_location="cpu")['model'].state_dict()
                 # Remove session embedding weights from checkpoint
                 ckpt.pop("encoder.embedder.embed_session.weight", None)
 
                 model.load_state_dict(ckpt, strict=False)
             else:
-                model.load_state_dict(torch.load(pretrain_model_path)['model'].state_dict(), strict=False)
+                model.load_state_dict(torch.load(pretrain_model_path, map_location="cpu")['model'].state_dict(), strict=False)
         else:
             print('Train from scratch.')
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
-        lr_scheduler = build_lr_scheduler(
+        lr_scheduler = OneCycleLR(
             optimizer=optimizer,
-            config=config,
-            steps_per_epoch=len(train_dataloader),
+            total_steps=config.training.num_epochs * len(train_dataloader) // config.optimizer.gradient_accumulation_steps,
+            max_lr=config.optimizer.lr,
+            pct_start=config.optimizer.warmup_pct,
+            div_factor=config.optimizer.div_factor,
+        )
+        model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            model,
+            optimizer,
+            train_dataloader,
+            lr_scheduler,
         )
 
         print(config)
@@ -232,6 +241,9 @@ try:
         trainer.train()
 
     #########################
+
+    if args.eval == "True":
+        accelerator.wait_for_everyone()
 
     if args.eval == "True":
         print('Start model evaluation.')
@@ -273,7 +285,7 @@ try:
             mask_path = 'MtM'
 
         if TRAINED:
-            finetune_model_path = f'{base_path}/{RESULTS_PATH}/finetune/model_{ss_model_name}/{eid}/model_best.pt'
+            finetune_model_path = os.path.join(base_path, RESULTS_PATH, output_model_name, "finetune", eid_name, "model_best.pt")
         else:
             finetune_model_path = f'{base_path}/{RESULTS_PATH}/finetune/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}/model_best.pt'
 
@@ -289,7 +301,8 @@ try:
             'stitching': True,
             'num_sessions': 1,
             'just_spikes': JUST_SPIKES,
-            'data_type': DATA_TYPE
+            'data_type': DATA_TYPE,
+            'base_path': base_path
         }
 
         # load your model and dataloader
@@ -298,7 +311,7 @@ try:
         is_aligned = False
 
         if TRAINED:
-            save_path = f'{base_path}/{RESULTS_PATH}/eval/{ss_model_name}/{eid}'
+            save_path = os.path.join(base_path, RESULTS_PATH, output_model_name, "eval", eid_name)
         else:
             save_path = f'{base_path}/{RESULTS_PATH}/eval/num_session_{num_train_sessions}/model_NDT1/method_ssl/{mask_name}/stitch_True/{eid}'
 
