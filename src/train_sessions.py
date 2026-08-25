@@ -17,7 +17,10 @@ import argparse
 from utils.optimizer_utils import build_lr_scheduler
 
 JUST_SPIKES = True
-BASE_PATH = '/work/hdd/beml/ac136'
+BASE_PATH = "/work/nvme/beml/ac136/IBL_MTM/data"
+DATA_TYPE = "processed_mtm"
+RESULTS_PATH = "/work/nvme/beml/ac136/IBL_MTM/results/mtm"
+OUTPUT_MODEL_NAME = "mtm-single-session_test"
 # DATA_TYPE = "just_spikes"
 # RESULTS_PATH = "training_og"
 
@@ -27,8 +30,8 @@ BASE_PATH = '/work/hdd/beml/ac136'
 # DATA_TYPE = "processed_kimia_020923_concat/"
 # RESULTS_PATH = "results_kimia_020923/"
 
-DATA_TYPE = "benchmark_datasets"
-RESULTS_PATH = "benchmark_results"
+# DATA_TYPE = "benchmark_datasets"
+# RESULTS_PATH = "benchmark_results"
 
 # Optionally copy and use datasets from a fast tmpfs location.
 # Set `USE_TMP_DATA=1` and optionally `TMP_DATA_DIR` to enable.
@@ -39,10 +42,25 @@ RESULTS_PATH = "benchmark_results"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--eid", type=str, default='c7248e09-8c0d-40f2-9eb4-700a8973d8c8_aligned')
+ap.add_argument("--base-path", type=str, default=BASE_PATH)
+ap.add_argument("--data-type", type=str, default=DATA_TYPE)
+ap.add_argument("--results-path", type=str, default=RESULTS_PATH)
+ap.add_argument("--output-model-name", type=str, default=OUTPUT_MODEL_NAME)
 args = ap.parse_args()
 
 
 eid = args.eid
+eid_name = eid[:-len("_aligned")] if eid.endswith("_aligned") else eid
+BASE_PATH = args.base_path
+DATA_TYPE = args.data_type
+RESULTS_PATH = args.results_path
+OUTPUT_MODEL_NAME = args.output_model_name
+
+print()
+print("Args to train_sessions:")
+for arg, value in vars(args).items():
+    print(f"{arg}: {value}")
+print()
 
 # load config
 kwargs = {
@@ -103,14 +121,10 @@ train_dataset, val_dataset, test_dataset, meta_data = load_ibl_dataset_locally(
 
 num_sessions = len(meta_data["eids"])
 
-log_dir = os.path.join(BASE_PATH, RESULTS_PATH, 
-                            "train", 
-                            # "num_session_{}".format(num_sessions), 
-                            # "model_{}".format(config.model.model_class), 
-                            # "method_{}".format(config.method.model_kwargs.method_name), 
-                            # "mask_{}".format(config.encoder.masker.mode),
-                            # "stitch_{}".format(config.encoder.stitching), 
-                            "{}".format(eid))
+log_dir = os.path.join(RESULTS_PATH,
+                            OUTPUT_MODEL_NAME,
+                            "train",
+                            "{}".format(eid_name))
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
         

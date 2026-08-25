@@ -25,12 +25,21 @@ fi
 export GPU_BENCHMARK_GPUS=$gpu_count
 
 EID=${1}
+OUTPUT_MODEL_NAME=${2:-mtm-single-session_test}
+BASE_PATH="/work/nvme/beml/ac136/IBL_MTM/data"
+DATA_TYPE="processed_mtm"
+RESULTS_PATH="/work/nvme/beml/ac136/IBL_MTM/results/mtm"
 RUN_ID=${SLURM_JOB_ID:-local}
 benchmark_file="gpu_benchmark_${EID}_${RUN_ID}.txt"
 start_time=$(date +%s)
 status="running"
 exit_code=0
-cmd=(python src/train_sessions.py --eid "$EID")
+cmd=(python src/train_sessions.py \
+    --eid "$EID" \
+    --base-path "$BASE_PATH" \
+    --data-type "$DATA_TYPE" \
+    --results-path "$RESULTS_PATH" \
+    --output-model-name "$OUTPUT_MODEL_NAME")
 
 iso_time() {
     date -d "@$1" --iso-8601=seconds 2>/dev/null || date -u -r "$1" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u
@@ -106,6 +115,10 @@ trap 'record_interrupt 130' INT
 trap 'record_interrupt 143' TERM
 
 echo "EID: $EID"
+echo "Base path: $BASE_PATH"
+echo "Data type: $DATA_TYPE"
+echo "Results path: $RESULTS_PATH"
+echo "Output model name: $OUTPUT_MODEL_NAME"
 
 "${cmd[@]}"
 exit_code=$?
