@@ -252,3 +252,64 @@ def filter_transfer_state_dict(state_dict, verbose=True):
         for k in sorted(specific):
             print(f"[transfer]   drop {k}")
     return {k: state_dict[k] for k in shared}
+
+
+def source_checkpoint_identity(path, expected_eid=None, expected_clusters=None,
+                               role="best"):
+    """Pin down exactly which model a transfer run started from.
+
+    Records sha256, eid, path, best epoch and which of the three saved
+    checkpoints was used -- `best`, `last` and `epoch` all sit in the same
+    directory and only the filename tells them apart, so the role has to be
+    recorded or "which model was this?" stays inferable rather than known.
+
+    Two checks are assertions, not notes, because both would otherwise surface
+    as a confusing Stage-3 result rather than a clear failure here:
+    the checkpoint's vocabulary must be exactly the source session, and its
+    stitcher must be sized for that session's actual cluster count.
+    """
+    import hashlib
+    from .compat import load_checkpoint
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    digest = h.hexdigest()
+
+    ckpt = load_checkpoint(path)
+    vocab = ckpt.get(VOCAB_KEY) if isinstance(ckpt, dict) else None
+    epoch = ckpt.get("epoch") if isinstance(ckpt, dict) else None
+
+    if expected_eid is not None:
+        want = [bare(expected_eid)]
+        got = [bare(e) for e in (vocab or [])]
+        if got != want:
+            raise VocabularyError(
+                f"Source checkpoint {path} has vocabulary {got}, expected {want}. "
+                f"Either the wrong checkpoint was passed or its provenance is wrong; "
+                f"a transfer from it could not be attributed to a source session."
+            )
+
+    model = ckpt.get("model") if isinstance(ckpt, dict) else None
+    stitcher = getattr(getattr(model, "encoder", None), "stitcher", None)
+    keys = sorted(stitcher.stitcher_dict.keys()) if stitcher is not None else []
+    ckpt_clusters = int(keys[0]) if len(keys) == 1 and keys[0].isdigit() else None
+    if expected_clusters is not None and ckpt_clusters is not None:
+        if ckpt_clusters != int(expected_clusters):
+            raise VocabularyError(
+                f"Source checkpoint {path} has a stitcher for {ckpt_clusters} clusters "
+                f"but the source session's data has {expected_clusters}. The checkpoint "
+                f"does not match the session it claims to come from."
+            )
+
+    return {
+        "source_checkpoint_path": str(path),
+        "source_checkpoint_sha256": digest,
+        "source_checkpoint_role": role,
+        "source_checkpoint_epoch": epoch,
+        "source_eid": (vocab or [None])[0],
+        "source_clusters": ckpt_clusters,
+        "source_" + VERSION_KEY: ckpt.get(VERSION_KEY) if isinstance(ckpt, dict) else None,
+        "source_" + RULE_KEY: ckpt.get(RULE_KEY) if isinstance(ckpt, dict) else None,
+    }

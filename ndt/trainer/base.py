@@ -69,6 +69,16 @@ class Trainer():
         # the thing that actually owns the row ordering; only the rule that
         # produced it has to be told to us.
         self.vocabulary_ordering_rule = kwargs.get("vocabulary_ordering_rule", None)
+        # 2c item 4: the split counts this run actually trained on, so the data
+        # policy is auditable from any checkpoint instead of inferred later.
+        self.split_counts = kwargs.get("split_counts", None)
+        self.pretrain_split_policy = kwargs.get("pretrain_split_policy", None)
+        # 2c item 5: source-checkpoint identity, passed through by finetune_eval.
+        # Collected generically so adding a provenance field later needs no
+        # change here -- the alternative is a named attribute per field, which is
+        # how provenance quietly stops being recorded.
+        self.extra_provenance = {k: v for k, v in kwargs.items()
+                                 if k.startswith("source_")}
         
         if self.config.method.model_kwargs.clf:
             self.metric = 'acc'
@@ -219,6 +229,9 @@ class Trainer():
 
         ### 3a: per-run facts, so the number to plot does not live in Slurm logs ###
         self.save_run_summary()
+
+        ### 2c item 2: durable checkpoints, finalised once ###
+        self.finalize_state_dicts()
 
 
     def train_epoch(self, epoch):
@@ -398,6 +411,10 @@ class Trainer():
             # 1c-ii provenance, mirroring what the checkpoints carry.
             **(vocab_metadata(self.session_vocab(), self.vocabulary_ordering_rule)
                if self.session_vocab() is not None else {}),
+            # 2c item 4
+            **(self.split_counts or {}),
+            "pretrain_split_policy": self.pretrain_split_policy,
+            **self.extra_provenance,
             "stitching": self.stitching,
             "masking_mode": self.masking_mode,
             "seed": self.config.get("seed", None),
@@ -435,6 +452,30 @@ class Trainer():
         embedder = getattr(getattr(self.model, "encoder", None), "embedder", None)
         vocab = getattr(embedder, "eid_lookup", None)
         return list(vocab) if vocab is not None else None
+
+    def finalize_state_dicts(self):
+        """Resave each checkpoint as a portable state_dict, once, at the end.
+
+        Deliberately NOT inside save_model. That is called on every improvement --
+        42 times in one measured 300-epoch run -- so writing a 51 MB state_dict
+        each time would be ~2.1 GB of writes, all but the last immediately
+        overwritten. Here it runs three times against the final files.
+
+        The pickles embed their class's import path, so they stop loading when
+        the model class changes; 1b will change it. These are the copies that
+        survive, and Stage 3 loads them.
+        """
+        from ..compat import resave_as_state_dict
+        for name in ("best", "last", "epoch"):
+            src = os.path.join(self.log_dir, f"model_{name}.pt")
+            if not os.path.isfile(src):
+                continue
+            dst = os.path.join(self.log_dir, f"model_{name}.state_dict.pt")
+            try:
+                resave_as_state_dict(src, dst)
+                print(f"finalised {dst}")
+            except Exception as e:
+                print(f"could not finalise {dst}: {type(e).__name__}: {e}")
 
     def save_model(self, name="last", epoch=0):
         # save model

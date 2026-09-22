@@ -55,6 +55,11 @@ def build_parser():
     # flag is inert unless passed. Applied before the trainer and the LR
     # scheduler are built, since build_lr_scheduler derives total_steps from it.
     ap.add_argument("--num-epochs", type=int, default=None)
+    # 2c item 3. None means "use the config", so this is inert unless passed and
+    # the MtM recipe file stays at its published values. Overriding here puts the
+    # choice in the recorded args instead of silently editing the recipe.
+    # Plotting touches no RNG, so this cannot move training.
+    ap.add_argument("--save-plot-every-n-epochs", type=int, default=None)
     return ap
 
 
@@ -100,6 +105,9 @@ def run(args):
     if getattr(args, "num_epochs", None) is not None:
         config["training"]["num_epochs"] = args.num_epochs
         print(f"num_epochs overridden to {args.num_epochs}")
+    if getattr(args, "save_plot_every_n_epochs", None) is not None:
+        config["training"]["save_plot_every_n_epochs"] = args.save_plot_every_n_epochs
+        print(f"save_plot_every_n_epochs overridden to {args.save_plot_every_n_epochs}")
 
     # set seed for reproducibility
     set_seed(config.seed)
@@ -114,6 +122,13 @@ def run(args):
                                 base_path=base_path,
                                 data_root=data_root
                                 )
+
+    # 2c item 4: what this run actually trained on. `test` is loaded and not used
+    # for pretraining -- the deliberate MtM policy -- so recording all three makes
+    # that auditable from the checkpoint rather than inferred from the code.
+    split_counts = {"n_train": len(train_dataset), "n_val": len(val_dataset),
+                    "n_test": len(test_dataset)}
+    print(f"split counts: {split_counts}  (policy: train_only)")
 
     log_dir = os.path.join(results_path,
                                 output_model_name,
@@ -187,6 +202,8 @@ def run(args):
         "config": config,
         "stitching": config.encoder.stitching,
         "vocabulary_ordering_rule": vocabulary_ordering_rule,
+        "split_counts": split_counts,
+        "pretrain_split_policy": "train_only",
     }
     trainer = make_trainer(
         model=model,

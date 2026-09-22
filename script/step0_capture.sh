@@ -97,52 +97,9 @@ if [ ! -d "$BASE_PATH/$DATA_TYPE/$BARE/data" ] && [ ! -d "$BASE_PATH/$DATA_TYPE/
 fi
 
 # ---------------------------------------------------------------- metadata
-python - "$OUT_ROOT/capture_meta.json" "$LABEL" "$EID" "$EPOCHS" <<'PY'
-import json, os, subprocess, sys, platform
-
-out, label, eid, epochs = sys.argv[1:5]
-
-def sh(*c):
-    try:
-        return subprocess.check_output(c, text=True, stderr=subprocess.DEVNULL).strip()
-    except Exception:
-        return None
-
-meta = {
-    "label": label,
-    "eid": eid,
-    "num_epochs": int(epochs),
-    "git_sha": sh("git", "rev-parse", "HEAD"),
-    "git_branch": sh("git", "rev-parse", "--abbrev-ref", "HEAD"),
-    "git_dirty": bool(sh("git", "status", "--porcelain")),
-    "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
-    "slurm_nodelist": os.environ.get("SLURM_JOB_NODELIST"),
-    "conda_env": os.environ.get("CONDA_DEFAULT_ENV"),
-    "python": sys.version.split()[0],
-    "platform": platform.platform(),
-}
-try:
-    import torch
-    meta.update({
-        "torch": torch.__version__,
-        "cuda": torch.version.cuda,
-        "cudnn": torch.backends.cudnn.version(),
-        "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-        "cudnn_deterministic": torch.backends.cudnn.deterministic,
-        "cudnn_benchmark": torch.backends.cudnn.benchmark,
-    })
-except Exception as e:
-    meta["torch_error"] = f"{type(e).__name__}: {e}"
-try:
-    import numpy
-    meta["numpy"] = numpy.__version__
-except Exception:
-    pass
-
-with open(out, "w") as f:
-    json.dump(meta, f, indent=2, sort_keys=True)
-print(json.dumps(meta, indent=2, sort_keys=True))
-PY
+# Shared with pilot_*.sh so every run gets the same record, not just captures.
+python script/write_capture_meta.py "$OUT_ROOT" "$LABEL" "$EID" "$EPOCHS" \
+    --cmd "step0_capture.sh $LABEL $EPOCHS $EID"
 
 # ---------------------------------------------------------------- 1. train
 echo

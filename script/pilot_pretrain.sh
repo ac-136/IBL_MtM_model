@@ -66,12 +66,34 @@ if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     git status --porcelain >&2
     exit 2
 fi
+# 2c item 7: Slurm runs against the LIVE working tree, so a commit landing while
+# this job sat in the queue would silently change what it measures. A clean tree
+# does not catch that -- the tree is clean at both commits. Pass EXPECT_SHA to
+# pin the exact commit this job was submitted against.
+if [ -n "${EXPECT_SHA:-}" ]; then
+    ACTUAL_SHA="$(git rev-parse HEAD)"
+    if [ "$ACTUAL_SHA" != "$EXPECT_SHA" ]; then
+        echo "ERROR: expected commit $EXPECT_SHA but the tree is at $ACTUAL_SHA." >&2
+        echo "       Something was committed while this job was queued." >&2
+        exit 2
+    fi
+    echo "commit verified: $ACTUAL_SHA"
+fi
 [ -d "$DATA_ROOT/$EID/data" ] || { echo "ERROR: no data at $DATA_ROOT/$EID/data" >&2; exit 2; }
 if [ -e "$LOG_DIR" ]; then
     echo "ERROR: $LOG_DIR exists. Remove it or choose another root." >&2
     exit 2
 fi
+mkdir -p "$LOG_DIR" || exit 2
 
+# 2c item 1: the same provenance record every other run gets.
+CMD="pilot_pretrain.sh $EID $EPOCHS"
+python script/write_capture_meta.py "$LOG_DIR" "src_${EID}" "$EID" "$EPOCHS" \
+    --cmd "$CMD" --config "$LOG_DIR/resolved_config.yaml"
+
+# 2c item 3: 20 rather than the config's 1. At 300 epochs that was ~685 PNGs and
+# ~140 MB per run. Overridden here, not in the config, so the MtM recipe file
+# stays at its published values and the choice appears in the recorded args.
 python -m ndt.cli.train_single \
     --eid "$EID" \
     --data-root "$DATA_ROOT" \
@@ -79,6 +101,7 @@ python -m ndt.cli.train_single \
     --data-type "$DATA_TYPE" \
     --results-path "$OUT_ROOT" \
     --output-model-name "src_${EID}" \
+    --save-plot-every-n-epochs "${PLOT_EVERY:-20}" \
     --num-epochs "$EPOCHS"
 rc=$?
 

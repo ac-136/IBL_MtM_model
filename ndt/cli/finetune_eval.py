@@ -14,7 +14,8 @@ from ..loader.make_loader import make_loader
 from ..utils.utils import set_seed, dummy_load
 from ..utils.config_utils import config_from_kwargs, update_config
 from ..models.ndt1 import NDT1
-from ..vocab import vocab_for_single_session, filter_transfer_state_dict
+from ..vocab import (vocab_for_single_session, filter_transfer_state_dict,
+                     source_checkpoint_identity)
 import torch
 import os
 from pathlib import Path
@@ -252,6 +253,15 @@ def run(args):
                     )
                 print(f"[transfer] {len(missing)} tensor(s) left at their fresh "
                       f"initialisation for this session")
+
+                # 2c item 5: pin down exactly which model this transfer started
+                # from, and assert it rather than only recording it. Without the
+                # role, `best`/`last`/`epoch` are indistinguishable after the fact.
+                source_identity = source_checkpoint_identity(
+                    pretrain_model_path, role="best")
+                print("[transfer] source identity:")
+                for k, v in source_identity.items():
+                    print(f"[transfer]   {k} = {v}")
             else:
                 print('Train from scratch.')
 
@@ -300,6 +310,7 @@ def run(args):
                 "config": config,
                 "stitching": config.model.encoder.stitching,
                 "vocabulary_ordering_rule": vocabulary_ordering_rule,
+                **source_identity,
             }
             trainer = make_trainer(
                 model=model,
