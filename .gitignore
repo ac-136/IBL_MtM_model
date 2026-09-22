@@ -171,8 +171,14 @@ results
 
 *.pth
 *.pt
-data
+# Anchored to the repo root: a bare `data` also matched ndt/data, which silently
+# dropped ndt/data/target_eids.txt and broke the package at import.
+/data
+# ndt/ ships this as package data; `*.txt` above would otherwise drop it. The
+# negation only works because /data no longer excludes the parent directory.
+!ndt/data/target_eids.txt
 *.out
+*.err
 
 *gz
 *results*
