@@ -57,6 +57,23 @@ def install_legacy_aliases(force=False):
     return installed
 
 
+def legacy_session_vocab():
+    """The shipped 40-entry session vocabulary, in its original file order.
+
+    `ndt/models/ndt1.py` used to read this at module import and size the session
+    embedding from it. The model now takes `session_vocab` explicitly, so this
+    is what a caller passes to reproduce the original behaviour exactly, and
+    what a legacy checkpoint's row indices are relative to.
+
+    Order is load-bearing: row *i* of a legacy `embed_session.weight` is this
+    list's entry *i*, so re-ordering it silently reinterprets every existing
+    checkpoint.
+    """
+    from .paths import data_path
+    with open(data_path("target_eids.txt")) as f:
+        return [line.rstrip() for line in f]
+
+
 def load_checkpoint(path, map_location="cpu", **kwargs):
     """torch.load a checkpoint from either tree, old or new."""
     import torch

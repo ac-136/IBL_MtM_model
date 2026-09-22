@@ -11,6 +11,7 @@ from ..loader.make_loader import make_loader
 from ..utils.utils import set_seed
 from ..utils.config_utils import config_from_kwargs, update_config
 from ..models.ndt1 import NDT1
+from ..compat import legacy_session_vocab
 import torch
 import os
 from ..trainer.make import make_trainer
@@ -155,7 +156,11 @@ def run(args):
 
     config = update_config(config, meta_data)
     model_class = NAME2MODEL[config.model.model_class]
-    model = model_class(config.model, **config.method.model_kwargs, **meta_data)
+    # 1c-i: the session vocabulary is now passed explicitly instead of being read
+    # from data/target_eids.txt at model-import time. legacy_session_vocab() is the
+    # original 40-entry list in its original order, so behaviour is unchanged.
+    model = model_class(config.model, **config.method.model_kwargs, **meta_data,
+                        session_vocab=legacy_session_vocab())
     model = accelerator.prepare(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)

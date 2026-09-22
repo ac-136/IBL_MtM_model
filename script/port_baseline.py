@@ -232,7 +232,13 @@ def capture(args):
         "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "n_state_dict_tensors": len(sd),
         "session_embedding_shape": list(emb.shape) if emb is not None else None,
-        "target_eids_entries": len(t["mod"].include_eids),
+        # The ndt tree dropped the module-level `include_eids` in 1c-i: the session
+        # vocabulary is passed into the model now. Fall back to the embedding's row
+        # count, which is the same number (one row per vocabulary entry), so captures
+        # taken before and after that change stay comparable.
+        "target_eids_entries": (len(t["mod"].include_eids)
+                                if hasattr(t["mod"], "include_eids")
+                                else (emb.shape[0] if emb is not None else None)),
         "stitcher_keys": sorted(model.encoder.stitcher.stitcher_dict.keys())
         if hasattr(model.encoder, "stitcher") else None,
         "stitch_decoder_keys": sorted(model.stitch_decoder.stitch_decoder_dict.keys())

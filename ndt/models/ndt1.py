@@ -13,24 +13,16 @@ ACT2FN["softsign"] = nn.Softsign
 from ..utils.config_utils import DictConfig, update_config
 from .model_output import ModelOutput
 from .masker import Masker
-from ..paths import config_path, data_path
+from ..paths import config_path
 
 DEFAULT_CONFIG = config_path("ndt1")
 
-with open(data_path("target_eids.txt")) as file:
-    include_eids = [line.rstrip() for line in file]
-
-# with open('data/test_re_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
-
-# with open('data/miv_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
-
-# with open('data/ece_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
-
-# with open('data/spike_eids.txt') as file:
-#     include_eids = [line.rstrip() for line in file]
+# The session vocabulary used to be read from data/target_eids.txt here, at
+# module import, and reached directly by NeuralEmbeddingLayer. It is now passed
+# in as `session_vocab`, so which sessions a model can represent is a property
+# of how it was constructed rather than of a file on disk.
+# ndt.compat.legacy_session_vocab() returns the old 40-entry list in its
+# original order, for reproducing legacy models and reading legacy checkpoints.
 
 
 @dataclass
@@ -88,7 +80,7 @@ def apply_rotary_pos_emb(q, k, pos_ids, cos, sin, unsqueeze_dim=1):
 # Embed and stack
 class NeuralEmbeddingLayer(nn.Module):
 
-    def __init__(self, hidden_size, n_channels, config: DictConfig):
+    def __init__(self, hidden_size, n_channels, config: DictConfig, session_vocab=None):
         super().__init__()
 
         self.adapt = config.adapt
@@ -159,9 +151,17 @@ class NeuralEmbeddingLayer(nn.Module):
         # Embed session token
         self.use_session = config.use_session
         if self.use_session:
-            self.eid_lookup = include_eids
+            if session_vocab is None:
+                raise ValueError(
+                    "session_vocab is required when config.use_session is true. "
+                    "It used to be read from data/target_eids.txt at import; pass "
+                    "ndt.compat.legacy_session_vocab() to reproduce that exactly."
+                )
+            # list() so a caller's sequence cannot be mutated underneath the model,
+            # and so order is pinned at construction: row i means session i.
+            self.eid_lookup = list(session_vocab)
             self.eid_to_indx = {r: i for i,r in enumerate(self.eid_lookup)}
-            self.embed_session = nn.Embedding(len(self.eid_lookup), hidden_size) 
+            self.embed_session = nn.Embedding(len(self.eid_lookup), hidden_size)
 
         # Regularization
         self.dropout = nn.Dropout(config.dropout)
@@ -446,9 +446,11 @@ class NeuralEncoder(nn.Module):
 
         # Embedding layer
         if config.stitching:
-            self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder.n_channels, config.embedder)
+            self.embedder = NeuralEmbeddingLayer(self.hidden_size, config.embedder.n_channels, config.embedder,
+                                                 session_vocab=kwargs.get('session_vocab'))
         else:
-            self.embedder = NeuralEmbeddingLayer(self.hidden_size, kwargs['num_neurons'][0], config.embedder)
+            self.embedder = NeuralEmbeddingLayer(self.hidden_size, kwargs['num_neurons'][0], config.embedder,
+                                                 session_vocab=kwargs.get('session_vocab'))
 
         # Transformer
         self.layers = nn.ModuleList([NeuralEncoderLayer(idx, config.embedder.max_F, config.transformer) for idx in range(self.n_layers)])

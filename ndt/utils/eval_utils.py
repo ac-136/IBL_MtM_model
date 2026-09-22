@@ -5,6 +5,7 @@ from .dataset_utils import load_ibl_dataset_locally, load_locally, session_data_
 from .utils import set_seed, move_batch_to_device, metrics_list
 from .config_utils import config_from_kwargs, update_config
 from ..models.ndt1 import NDT1
+from ..compat import legacy_session_vocab
 from scipy.special import gammaln
 from sklearn.metrics import r2_score
 from sklearn.cluster import SpectralClustering
@@ -70,7 +71,8 @@ def load_model_data_local(**kwargs):
     print(model_path)
 
     model_class = NAME2MODEL[config.model.model_class]
-    model = model_class(config.model, **config.method.model_kwargs, **meta_data)    
+    model = model_class(config.model, **config.method.model_kwargs, **meta_data,
+                        session_vocab=legacy_session_vocab())    
     model = torch.load(model_path)['model']
 
     # ### IF NO TRAINING ###
@@ -493,7 +495,8 @@ def behavior_decoding(**kwargs):
         os.makedirs(log_dir)
 
     model_class = NAME2MODEL[config.model.model_class]
-    model = model_class(config.model, **config.method.model_kwargs, **meta_data)
+    model = model_class(config.model, **config.method.model_kwargs, **meta_data,
+                        session_vocab=legacy_session_vocab())
     if use_logreg:
         model = torch.load(model_path)['model']
 
