@@ -21,6 +21,12 @@ Compared, by relative path under each root:
 
 benchmark.json is skipped: it is wall-clock timing and will always differ.
 
+--allow-new-keys exists for the Step 0 logging-parity gate. Landing the 3a run
+recording adds keys to loss_history.npz, which would otherwise read as a failure
+and force the gate to be waved through by hand. The flag is one-directional: a
+key that appears in B is additive and can be allowlisted, but a key that has
+vanished from B is a regression and always fails.
+
 NaN handling matters here. r2.npy is entirely NaN today, and bps arrays carry
 NaN for neurons whose bits-per-spike was non-finite. torch.equal and a plain
 subtraction both get this wrong in opposite directions, so positions that are
@@ -102,7 +108,13 @@ def main():
     ap.add_argument("--tol", type=float, default=0.0,
                     help="max abs difference treated as a pass (default 0.0, exact)")
     ap.add_argument("--quiet", action="store_true", help="only show non-matching artifacts")
+    ap.add_argument("--allow-new-keys", nargs="*", default=[], metavar="NAME",
+                    help="key names permitted to exist in B but not A, e.g. the metrics "
+                         "added by 3a. Deliberately one-directional: a key that exists in "
+                         "A but not B has DISAPPEARED and always fails.")
     args = ap.parse_args()
+
+    allow_new = set(args.allow_new_keys)
 
     A, B = Path(args.a).resolve(), Path(args.b).resolve()
     for r in (A, B):
@@ -136,7 +148,14 @@ def main():
             unreadable.append(str(rel))
             continue
         keys = sorted(set(da) & set(db))
-        missing = sorted(set(da) ^ set(db))
+        # One-directional on purpose. A key only in B is additive, which is what
+        # landing 3a looks like and what --allow-new-keys is for. A key only in A
+        # has disappeared, which is a regression no allowlist should hide.
+        gone = sorted(set(da) - set(db))
+        added = sorted(set(db) - set(da))
+        unexpected_added = [k for k in added
+                            if k.split(":", 1)[-1] not in allow_new]
+        missing = gone + unexpected_added
         worst, worst_key, note = 0.0, None, ""
         for k in keys:
             d, n = nan_aware_max_diff(da[k], db[k])
@@ -154,8 +173,14 @@ def main():
         print(f"         {len(keys)} array(s), max|A-B| = {worst:.6e}"
               + (f"  worst: {worst_key}" if worst_key and worst > 0 else "")
               + (f"  ({note})" if note else ""))
-        if missing:
-            print(f"         keys present on only one side: {missing[:6]}")
+        if gone:
+            print(f"         REGRESSION, keys present in A but gone from B: {gone[:6]}")
+        if unexpected_added:
+            print(f"         keys new in B and not allowlisted: {unexpected_added[:6]}")
+        allowed_added = [k for k in added if k not in unexpected_added]
+        if allowed_added:
+            print(f"         {len(allowed_added)} new key(s) in B, allowlisted: "
+                  f"{allowed_added[:6]}")
 
     print("\n" + "-" * 64)
     if unreadable:
