@@ -115,6 +115,34 @@ def main():
     for eid, diag in all_diag:
         for d in diag:
             print(f"  [warn] {eid}  {d}"); any_diag = True
+
+    # Cross-run diagnostics (criteria 10 and 11). These are properties of the SET
+    # of runs, not of any one run, so they have to be computed here; an earlier
+    # version reported "none" while never evaluating them at all.
+    ms = [r["best_metric"] for r in rows if r["best_metric"] is not None]
+    if len(ms) >= 2:
+        rng = max(ms) - min(ms)
+        if rng > 0.1:
+            print(f"  [warn] criterion 11: best_metric spread {rng:.4f} "
+                  f"({min(ms):+.4f} to {max(ms):+.4f}) across {len(ms)} sources")
+            any_diag = True
+        tr = [r["trials"] for r in rows if r["best_metric"] is not None and r["trials"]]
+        cl = [r["clusters"] for r in rows if r["best_metric"] is not None and r["clusters"]]
+        if len(tr) == len(ms) and len(set(tr)) > 1:
+            ct = float(np.corrcoef(ms, tr)[0, 1])
+            cc = float(np.corrcoef(ms, cl)[0, 1]) if len(cl) == len(ms) else float("nan")
+            print(f"  [info] best_metric vs trials r={ct:+.3f}, vs clusters r={cc:+.3f}"
+                  f"   (n={len(ms)}; indicative only)")
+    coh = {}
+    for r in rows:
+        if r["best_metric"] is not None and r["cohort"] in ("rs", "bwm"):
+            coh.setdefault(r["cohort"], []).append(r["best_metric"])
+    if len(coh) == 2:
+        means = {k: sum(v) / len(v) for k, v in coh.items()}
+        print(f"  [info] criterion 10 cohort means: "
+              + ", ".join(f"{k} {means[k]:+.4f} (n={len(coh[k])})" for k in sorted(coh))
+              + "   — too few per cohort to conclude a cohort effect")
+
     if not any_diag:
         print("  [ok] none")
 
