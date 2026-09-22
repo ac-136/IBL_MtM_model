@@ -46,6 +46,8 @@ ap.add_argument("--base-path", type=str, default=BASE_PATH)
 ap.add_argument("--data-type", type=str, default=DATA_TYPE)
 ap.add_argument("--results-path", type=str, default=RESULTS_PATH)
 ap.add_argument("--output-model-name", type=str, default=OUTPUT_MODEL_NAME)
+# Stage-1b parity: None means "use the config".
+ap.add_argument("--num-epochs", type=int, default=None)
 args = ap.parse_args()
 
 
@@ -73,6 +75,12 @@ kwargs = {
 config = config_from_kwargs(kwargs)
 config = update_config("src/configs/ndt1_stitching.yaml", config)
 config = update_config("src/configs/ssl_session_trainer.yaml", config) # single session
+
+# Item assignment, not attribute assignment: DictConfig.__getattr__ returns a
+# fresh DictConfig, so config.training.num_epochs = x would be silently lost.
+if args.num_epochs is not None:
+    config["training"]["num_epochs"] = args.num_epochs
+    print(f"num_epochs overridden to {args.num_epochs}")
 
 # config = update_config("src/configs/ssl_sessions_trainer.yaml", config)
 

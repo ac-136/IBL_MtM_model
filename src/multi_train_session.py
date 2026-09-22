@@ -27,6 +27,11 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--num-sessions", type=int, default=None)
 ap.add_argument("--train-session-eid", nargs="+", default=None)
 ap.add_argument("--model_name", type=str, default=None)
+# Stage-1b parity: None means "use the config".
+ap.add_argument("--num-epochs", type=int, default=None)
+ap.add_argument("--base-path", type=str, default=BASE_PATH)
+ap.add_argument("--data-type", type=str, default=DATA_TYPE)
+ap.add_argument("--results-path", type=str, default=RESULTS_PATH)
 args = ap.parse_args()
 
 # load config
@@ -45,6 +50,13 @@ if args.train_session_eid is not None:
     config["data"]["train_session_eid"] = args.train_session_eid
 if args.num_sessions is not None:
     config["data"]["num_sessions"] = args.num_sessions
+# Item assignment, not attribute assignment: see note in train_sessions.py
+if args.num_epochs is not None:
+    config["training"]["num_epochs"] = args.num_epochs
+    print(f"num_epochs overridden to {args.num_epochs}")
+BASE_PATH = args.base_path
+DATA_TYPE = args.data_type
+RESULTS_PATH = args.results_path
 
 # set seed for reproducibility
 set_seed(config.seed)

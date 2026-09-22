@@ -315,7 +315,8 @@ def load_ibl_dataset_locally(
                      mode = "train",
                      batch_size=1,
                      use_re=False,
-                     seed=42):
+                     seed=42,
+                     data_root=None):
 
     print("\nload_ibl_dataset_locally parameters: ")
     
@@ -333,7 +334,13 @@ def load_ibl_dataset_locally(
     print(f"seed: ", seed)
 
     ### HANDLE DIFF DATASET LOADING BETWEEN SPIKES ONLY AND OG DATASETS ###
-    data_path = os.path.join(base_path, data_type)
+    # Keep ``data_type`` as the semantic dataset format while allowing callers
+    # to load that format from a directory whose basename is different.  This
+    # matters for fine-tuning because ``data_type`` also controls checkpoint
+    # handling and therefore cannot safely be inferred from the directory name.
+    data_path = os.path.abspath(os.path.expanduser(data_root)) if data_root else os.path.join(base_path, data_type)
+    if not os.path.isdir(data_path):
+        raise FileNotFoundError(f"Dataset root not found: {data_path}")
 
     # if data_type == "processed_miv":
     #     train_aligned = False

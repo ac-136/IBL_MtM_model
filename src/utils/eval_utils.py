@@ -47,6 +47,7 @@ def load_model_data_local(**kwargs):
     just_spikes = kwargs['just_spikes']
     data_type = kwargs['data_type']
     base_path = kwargs['base_path']
+    data_root = kwargs.get('data_root')
 
     train_aligned = False
 
@@ -92,7 +93,8 @@ def load_model_data_local(**kwargs):
                             eid=eid,
                             just_spikes=just_spikes,
                             data_type=data_type,
-                            base_path=base_path)
+                            base_path=base_path,
+                            data_root=data_root)
 
     print(meta_data)
     print()
@@ -156,7 +158,8 @@ def load_model_data_local(**kwargs):
     if train_aligned:
         dataset = load_dataset(f'ibl-foundation-model/{eid}_aligned', cache_dir=config.dirs.dataset_cache_dir)["test"]
     else:
-        dir_path = os.path.join(base_path, data_type, eid, "data")
+        dataset_root = os.path.abspath(os.path.expanduser(data_root)) if data_root else os.path.join(base_path, data_type)
+        dir_path = os.path.join(dataset_root, eid, "data")
         dataset = load_dataset(
             "parquet",
             data_files={

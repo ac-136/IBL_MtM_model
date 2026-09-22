@@ -62,11 +62,19 @@ ap.add_argument("--eval", type=str, default="True")
 # ap.add_argument("--base_path", type=str, default='/mnt/home/yzhang1/ceph')
 ap.add_argument("--base_path", type=str, default='/work/hdd/beml/ac136')
 ap.add_argument("--data-type", type=str, default=DATA_TYPE)
+ap.add_argument(
+    "--data-root",
+    type=str,
+    default=None,
+    help="Directory containing the per-EID folders; overrides base_path/data-type for input data only.",
+)
 ap.add_argument("--results-path", type=str, default=RESULTS_PATH)
 ap.add_argument("--output-model-name", type=str, default=None)
 ap.add_argument("--num_train_sessions", type=int, default=1)
 ap.add_argument('--use_dummy', action='store_true')
 ap.add_argument('--model_path', type=str, default='/work/hdd/beml/ac136/training_og/train/num_session_1/model_NDT1/method_ssl/mask_temporal/stitch_True/5dcee0eb-b34d-4652-acc3-d10afc6eae68/model_best.pt')
+# Stage-1b parity: None means "use the config".
+ap.add_argument("--num-epochs", type=int, default=None)
 args = ap.parse_args()
 
 eid = args.test_eid
@@ -75,6 +83,7 @@ source_model_name = Path(args.model_path).parent.parent.name
 output_model_name = args.output_model_name or source_model_name
 base_path = args.base_path
 DATA_TYPE = args.data_type
+DATA_ROOT = args.data_root
 RESULTS_PATH = args.results_path
 model_acroynm = args.model_name.lower()
 num_train_sessions = args.num_train_sessions
@@ -108,6 +117,12 @@ else:
 config = config_from_kwargs(kwargs)
 config = update_config("src/configs/finetune_sessions_trainer.yaml", config)
 
+# Item assignment, not attribute assignment: see note in train_sessions.py.
+# This also rescales the OneCycleLR total_steps below, which is intended.
+if args.num_epochs is not None:
+    config["training"]["num_epochs"] = args.num_epochs
+    print(f"num_epochs overridden to {args.num_epochs}")
+
 set_seed(config.seed)
 # Shared variable to signal the dummy load to stop
 stop_dummy_load = threading.Event()
@@ -130,7 +145,8 @@ try:
                             seed=config.seed,
                             just_spikes=JUST_SPIKES,
                             data_type=DATA_TYPE,
-                            base_path=base_path)
+                            base_path=base_path,
+                            data_root=DATA_ROOT)
         
         if TRAINED:
             log_dir = os.path.join(base_path, RESULTS_PATH, output_model_name, "finetune", eid_name)
@@ -363,7 +379,8 @@ try:
             'num_sessions': 1,
             'just_spikes': JUST_SPIKES,
             'data_type': DATA_TYPE,
-            'base_path': base_path
+            'base_path': base_path,
+            'data_root': DATA_ROOT,
         }
             
         # load your model and dataloader
