@@ -18,6 +18,14 @@ class Trainer():
         ### Add method to save loss ###
         self.train_losses = []
         self.eval_losses = []
+        # Tier 3a run recording. Strictly observational: every value below is
+        # already computed by the training loop and was being printed to stdout
+        # and discarded, so the number to plot against scale survived only in
+        # the Slurm logs. Nothing here changes model selection or scheduling.
+        self.eval_metrics = []
+        self.learning_rates = []
+        self.best_epoch = None
+        self.best_metric = None
 
         # get all the arguments
         self.model = model
@@ -32,6 +40,11 @@ class Trainer():
         self.config = kwargs.get("config", None)
         self.stitching = kwargs.get("stitching", None)
         self.num_neurons = kwargs.get("num_neurons", None)
+        # 3a: already passed in via **meta_data by every CLI, just never kept.
+        # Recording which sessions a run actually used is what makes a scaling
+        # point reproducible; `eids` is a set, so it is sorted at write time.
+        self.eids = kwargs.get("eids", None)
+        self.num_sessions = kwargs.get("num_sessions", None)
         
         if self.config.method.model_kwargs.clf:
             self.metric = 'acc'
@@ -68,9 +81,21 @@ class Trainer():
             )
 
             self.eval_losses.append(
-                eval_epoch_results["eval_loss"].item() 
-                if isinstance(eval_epoch_results["eval_loss"], torch.Tensor) 
+                eval_epoch_results["eval_loss"].item()
+                if isinstance(eval_epoch_results["eval_loss"], torch.Tensor)
                 else eval_epoch_results["eval_loss"]
+            )
+
+            # 3a: the quality metric and the LR, both already computed above.
+            # Reading them cannot perturb the RNG stream; the scheduler is
+            # stepped per batch inside train_epoch and is only *read* here.
+            _metric = eval_epoch_results[f"eval_trial_avg_{self.metric}"]
+            self.eval_metrics.append(
+                _metric.item() if isinstance(_metric, torch.Tensor) else _metric
+            )
+            self.learning_rates.append(
+                self.lr_scheduler.get_last_lr()[0] if self.lr_scheduler is not None
+                else self.optimizer.param_groups[0]["lr"]
             )
 
             if eval_epoch_results:
@@ -78,6 +103,15 @@ class Trainer():
                 # if eval_epoch_results[f'eval_loss'] < best_eval_loss:
                     best_eval_loss = eval_epoch_results[f'eval_loss']
                     best_eval_trial_avg_metric = eval_epoch_results[f'eval_trial_avg_{self.metric}']
+                    # 3a: which epoch model_best.pt actually came from, which was
+                    # otherwise recoverable only from stdout. The selection
+                    # condition above is deliberately untouched.
+                    self.best_epoch = epoch
+                    self.best_metric = (
+                        best_eval_trial_avg_metric.item()
+                        if isinstance(best_eval_trial_avg_metric, torch.Tensor)
+                        else best_eval_trial_avg_metric
+                    )
                     print(f"epoch: {epoch} best eval loss: {best_eval_loss}")
                     print(f"epoch: {epoch} best eval trial avg {self.metric}: {best_eval_trial_avg_metric}")
                     # save model
@@ -149,7 +183,14 @@ class Trainer():
             os.path.join(loss_save_path, "loss_history.npz"),
             train_loss=np.array(self.train_losses),
             eval_loss=np.array(self.eval_losses),
+            # 3a: additive only. The two arrays above keep their exact previous
+            # values, which is what the Step 0 logging-parity gate checks.
+            eval_metric=np.array(self.eval_metrics),
+            lr=np.array(self.learning_rates),
         )
+
+        ### 3a: per-run facts, so the number to plot does not live in Slurm logs ###
+        self.save_run_summary()
 
 
     def train_epoch(self, epoch):
@@ -277,6 +318,63 @@ class Trainer():
             "plot_r2": r2_fig
         }
         
+
+    def save_run_summary(self):
+        """Write the per-run facts needed to plot a scaling point.
+
+        Tier 3a, and strictly observational: every value is either already
+        computed by the training loop, already passed in via **meta_data, or a
+        pure read of model/optimizer state. Nothing here is computed for the
+        first time and nothing is fed back into training, so this cannot move
+        the RNG stream. The Step 0 logging-parity gate is what verifies that.
+        """
+        try:
+            n_trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            n_total = sum(p.numel() for p in self.model.parameters())
+        except Exception:
+            n_trainable = n_total = None
+
+        # meta_data["eids"] is a set, and set iteration order over strings varies
+        # between processes unless PYTHONHASHSEED is fixed. Sorting makes the
+        # recorded session list comparable across runs.
+        eids = sorted(self.eids) if self.eids is not None else None
+
+        summary = {
+            "num_epochs_configured": self.config.training.num_epochs,
+            "num_epochs_recorded": len(self.train_losses),
+            "metric_name": self.metric,
+            "best_epoch": self.best_epoch,
+            "best_metric": self.best_metric,
+            "final_train_loss": self.train_losses[-1] if self.train_losses else None,
+            "final_eval_loss": self.eval_losses[-1] if self.eval_losses else None,
+            "train_loss": self.train_losses,
+            "eval_loss": self.eval_losses,
+            "eval_metric": self.eval_metrics,
+            "lr": self.learning_rates,
+            "num_trainable_params": n_trainable,
+            "num_total_params": n_total,
+            "num_sessions": self.num_sessions,
+            "num_neurons": self.num_neurons,
+            "eids": eids,
+            "stitching": self.stitching,
+            "masking_mode": self.masking_mode,
+            "seed": self.config.get("seed", None),
+        }
+        path = os.path.join(self.log_dir, "run_summary.json")
+        with open(path, "w") as f:
+            json.dump(summary, f, indent=2, default=str)
+        print(f"Saved run summary to {path}")
+
+        # The resolved config, so a run can be reconstructed without guessing
+        # which YAML defaults were in force when it was launched.
+        try:
+            from omegaconf import OmegaConf
+            cfg_path = os.path.join(self.log_dir, "resolved_config.yaml")
+            with open(cfg_path, "w") as f:
+                f.write(OmegaConf.to_yaml(self.config))
+            print(f"Saved resolved config to {cfg_path}")
+        except Exception as e:
+            print(f"could not save resolved config: {type(e).__name__}: {e}")
 
     def save_model(self, name="last", epoch=0):
         # save model

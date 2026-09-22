@@ -71,7 +71,7 @@ they are allowed on the B side only; everything that existed before must still
 be bit-identical:
 
   python script/compare_runs.py $STEP0/repro_a $STEP0/post3a \\
-      --allow-new-keys lr eval_metric best_epoch
+      --allow-new-keys lr eval_metric
 
 Required result: every pre-existing artifact at exactly 0.0. A key that
 DISAPPEARED is still a failure, and --allow-new-keys will not mask it.
