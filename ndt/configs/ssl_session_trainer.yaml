@@ -19,7 +19,7 @@ dirs:
 
 # Training configuration
 training:
-  num_epochs: 350
+  num_epochs: 300
   train_batch_size: 8
   test_batch_size: 8  
   shuffle_test_dataloader: false    # Shuffle test dataloader between epochs
@@ -102,22 +102,17 @@ method:
           min_length: null
       
 
-# optimizer:
-#   gradient_accumulation_steps: 1
-#   lr: 1.e-3
-#   # wd: 0.01
-#   wd: 1.e-3
-#   eps: 1.e-8
-#   # warmup_pct: 0.15 # cosine/linear
-#   warmup_pct: 0.02
-#   gamma: 0.95     # step
-#   div_factor: 10  # cosine
-#   scheduler: cosine # step/cosine/linear
-
+# The original IBL-MtM values, restored. Commit 1f97242 ("single-GPU benchmarking
+# set up") had changed these to lr 1.e-4 / wd 1.e-4 / warmup 0.0 / linear and left
+# a further commented variant above them; this is the block as it stood at 652c61c.
+# Keep this as the default recipe: a default config that is not the default recipe
+# is how every run silently inherited tuned values for months.
 optimizer:
   gradient_accumulation_steps: 1
-  lr: 1.e-4
-  wd: 1.e-4
+  lr: 1.e-3
+  wd: 0.01
   eps: 1.e-8
-  warmup_pct: 0.0
-  scheduler: linear
+  warmup_pct: 0.15 # cosine/linear
+  gamma: 0.95     # step
+  div_factor: 10  # cosine
+  scheduler: cosine # step/cosine/linear
