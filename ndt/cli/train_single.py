@@ -44,6 +44,11 @@ def build_parser():
     ap.add_argument("--eid", type=str, default='c7248e09-8c0d-40f2-9eb4-700a8973d8c8_aligned')
     ap.add_argument("--base-path", type=str, default=BASE_PATH)
     ap.add_argument("--data-type", type=str, default=DATA_TYPE)
+    # Points the loader at a directory whose basename differs from data_type.
+    # data_type still selects the dataset *format* and cannot be inferred from
+    # the path, so the two stay separate. None means "use base_path/data_type",
+    # so this is inert unless passed.
+    ap.add_argument("--data-root", type=str, default=None)
     ap.add_argument("--results-path", type=str, default=RESULTS_PATH)
     ap.add_argument("--output-model-name", type=str, default=OUTPUT_MODEL_NAME)
     # Added for the Stage-1b parity runs. None means "use the config", so the
@@ -76,6 +81,7 @@ def run(args):
     eid_name = eid[:-len("_aligned")] if eid.endswith("_aligned") else eid
     base_path = args.base_path
     data_type = args.data_type
+    data_root = args.data_root
     results_path = args.results_path
     output_model_name = args.output_model_name
 
@@ -105,7 +111,8 @@ def run(args):
                                 train_session_eid=[eid],
                                 test_session_eid=config.data.test_session_eid,  # []
                                 data_type=data_type,
-                                base_path=base_path
+                                base_path=base_path,
+                                data_root=data_root
                                 )
 
     log_dir = os.path.join(results_path,
