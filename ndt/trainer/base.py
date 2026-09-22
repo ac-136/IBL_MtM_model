@@ -7,6 +7,25 @@ from ..utils.utils import move_batch_to_device, metrics_list, plot_gt_pred, plot
 from ..vocab import vocab_metadata
 from tqdm import tqdm
 
+
+def _to_plain(obj):
+    """Recursively reduce a config to YAML-safe primitives.
+
+    Handles the two things that break a plain dump: config_utils.DictConfig is a
+    dict *subclass*, which yaml.safe_dump refuses, and meta_data puts a set of
+    eids into the config. Sets are sorted so the dumped config is stable across
+    runs rather than varying with hash order.
+    """
+    if isinstance(obj, dict):
+        return {str(k): _to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_plain(v) for v in obj]
+    if isinstance(obj, (set, frozenset)):
+        return sorted(_to_plain(v) for v in obj)
+    if isinstance(obj, (str, bool, int, float)) or obj is None:
+        return obj
+    return str(obj)
+
 class Trainer():
     def __init__(
             self,
@@ -390,14 +409,24 @@ class Trainer():
 
         # The resolved config, so a run can be reconstructed without guessing
         # which YAML defaults were in force when it was launched.
+        #
+        # NOT OmegaConf.to_yaml: ndt.utils.config_utils defines its own DictConfig
+        # (a plain dict subclass) that merely shares omegaconf's class name, and
+        # OmegaConf rejects it. The config also carries meta_data, so it contains
+        # a set of eids, which no YAML dumper accepts either. Serialise fully
+        # before opening the file: writing first and serialising second left a
+        # zero-byte resolved_config.yaml that looked like a successful save.
         try:
-            from omegaconf import OmegaConf
-            cfg_path = os.path.join(self.log_dir, "resolved_config.yaml")
-            with open(cfg_path, "w") as f:
-                f.write(OmegaConf.to_yaml(self.config))
-            print(f"Saved resolved config to {cfg_path}")
+            import yaml
+            text = yaml.safe_dump(_to_plain(self.config), default_flow_style=False,
+                                  sort_keys=True)
         except Exception as e:
-            print(f"could not save resolved config: {type(e).__name__}: {e}")
+            print(f"could not serialise resolved config: {type(e).__name__}: {e}")
+            return
+        cfg_path = os.path.join(self.log_dir, "resolved_config.yaml")
+        with open(cfg_path, "w") as f:
+            f.write(text)
+        print(f"Saved resolved config to {cfg_path} ({len(text)} bytes)")
 
     def session_vocab(self):
         """The vocabulary this model was built with, or None if it has no session
