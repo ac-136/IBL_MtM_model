@@ -180,34 +180,45 @@ def main():
     # A natural same-count pair does not have to exist in the data -- the fixture
     # constructs one. Relying on finding two real sessions with identical cluster
     # counts would make this test's coverage an accident of the pool.
+    #
+    # The contract is stated as what the LOAD did, not as what the tensors
+    # resemble:
+    #
+    #   shared           post_load == source            (inherited)
+    #   session-specific post_load == H's pre-load state (untouched)
+    #
+    # An earlier version asserted "session-specific differs from source", which is
+    # only a proxy: it fails for any constant-initialised tensor, since a zero bias
+    # in H matches a zero bias in S whether or not anything loaded.
     N = 300
     src, src_cfg, _ = build([A], [N], seed=42)
     dst, _, _ = build([B], [N], seed=7)   # same cluster count, different session AND seed
-    src_sd, dst_sd = src.state_dict(), dst.state_dict()
+    src_sd = {k: v.clone() for k, v in src.state_dict().items()}
+    # state_dict() returns live references, so the pre-load snapshot must be cloned
+    # or load_state_dict mutates it too and the comparison becomes trivially true.
+    pre_sd = {k: v.clone() for k, v in dst.state_dict().items()}
 
     check("source and target have identical key sets (the dangerous case)",
-          lambda: None if set(src_sd) == set(dst_sd) else
+          lambda: None if set(src_sd) == set(pre_sd) else
           (_ for _ in ()).throw(AssertionError("key sets differ; fixture is not testing the hazard")))
-    # Non-vacuity guard. Some tensors are constant-initialised (LayerNorm weights
-    # at 1, etc.) and so are seed-independent by construction; those can never
-    # distinguish "inherited" from "fresh" and are excluded from the shared-side
-    # check. The session-specific tensors are all random-initialised, so every one
-    # of them MUST differ pre-load or the "stayed fresh" assertion below proves
-    # nothing.
-    pre_same = {k for k in src_sd if torch.equal(src_sd[k], dst_sd[k])}
-    spec_set = set(classify_state_dict_keys(src_sd.keys())[1])
-    check(f"no session-specific tensor is seed-independent "
-          f"({len(pre_same)}/{len(src_sd)} constant-init overall, none of them specific)",
-          lambda: None if not (pre_same & spec_set) else
-          (_ for _ in ()).throw(AssertionError(
-              f"seed-independent session-specific tensors make the freshness check "
-              f"vacuous: {sorted(pre_same & spec_set)}")))
 
     shared, specific = classify_state_dict_keys(src_sd.keys())
     check(f"every key classified: {len(shared)} shared + {len(specific)} session-specific"
           f" == {len(src_sd)}",
           lambda: None if len(shared) + len(specific) == len(src_sd) else
           (_ for _ in ()).throw(AssertionError("partition does not cover the checkpoint")))
+
+    # Non-vacuity: if S and H were identical going in, every assertion below would
+    # pass no matter what the load did. Constant-initialised tensors are allowed to
+    # match and are not evidence either way, so require at least one NON-constant
+    # session-specific tensor to differ.
+    spec_differ = [k for k in specific if not torch.equal(src_sd[k], pre_sd[k])]
+    check(f"non-vacuity: {len(spec_differ)}/{len(specific)} session-specific tensors "
+          f"differ between S and H before loading",
+          lambda: None if spec_differ else
+          (_ for _ in ()).throw(AssertionError(
+              "S and H are identical on every session-specific tensor pre-load; "
+              "the freshness assertion below would pass vacuously")))
 
     check("an unrecognised key is refused, not silently transferred",
           lambda: classify_state_dict_keys(list(src_sd) + ["encoder.brand_new_module.weight"]),
@@ -226,21 +237,21 @@ def main():
           lambda: None if set(missing) == set(specific) else
           (_ for _ in ()).throw(AssertionError(f"missing != specific: {set(missing) ^ set(specific)}")))
 
-    after = dst.state_dict()
-    same = [k for k in shared if torch.equal(after[k], src_sd[k])]
-    check(f"ALL {len(shared)} shared tensors inherited exactly from the source",
-          lambda: None if len(same) == len(shared) else
-          (_ for _ in ()).throw(AssertionError(
-              f"{len(shared)-len(same)} shared tensor(s) did not transfer: "
-              f"{sorted(set(shared)-set(same))[:5]}")))
+    post_sd = dst.state_dict()
 
-    diff = [k for k in specific if not torch.equal(after[k], src_sd[k])]
-    check(f"ALL {len(specific)} session-specific tensors stayed fresh, "
-          f"despite identical shapes",
-          lambda: None if len(diff) == len(specific) else
+    bad_shared = [k for k in shared if not torch.equal(post_sd[k], src_sd[k])]
+    check(f"SHARED: all {len(shared)} tensors post_load == source exactly",
+          lambda: None if not bad_shared else
           (_ for _ in ()).throw(AssertionError(
-              f"{len(specific)-len(diff)} session-specific tensor(s) were inherited: "
-              f"{sorted(set(specific)-set(diff))[:5]}")))
+              f"{len(bad_shared)} shared tensor(s) did not transfer: {sorted(bad_shared)[:5]}")))
+
+    bad_spec = [k for k in specific if not torch.equal(post_sd[k], pre_sd[k])]
+    check(f"SESSION-SPECIFIC: all {len(specific)} tensors post_load == H's pre-load "
+          f"state exactly (untouched by the load)",
+          lambda: None if not bad_spec else
+          (_ for _ in ()).throw(AssertionError(
+              f"{len(bad_spec)} session-specific tensor(s) were modified by the load: "
+              f"{sorted(bad_spec)[:5]}")))
 
     check("decoder.* is on the SHARED side, not misfiled with stitch_decoder.*",
           lambda: None if any(k.startswith("decoder.") for k in shared)
