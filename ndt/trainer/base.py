@@ -99,6 +99,10 @@ class Trainer():
             )
 
             if eval_epoch_results:
+                # NOTE: this condition IS the checkpoint-selection rule, and it is
+                # recorded verbatim as `selection_rule` in run_summary.json. If you
+                # switch to the commented-out alternative below, update
+                # Trainer.selection_rule() to match or the record becomes a lie.
                 if eval_epoch_results[f'eval_trial_avg_{self.metric}'] > best_eval_trial_avg_metric:
                 # if eval_epoch_results[f'eval_loss'] < best_eval_loss:
                     best_eval_loss = eval_epoch_results[f'eval_loss']
@@ -319,6 +323,16 @@ class Trainer():
         }
         
 
+    def selection_rule(self):
+        """How model_best.pt is chosen, as a string for the run record.
+
+        Kept next to save_run_summary rather than inlined so there is one place
+        to update if the condition in train() changes. `metric_name` alone says
+        which metric is used but not in which direction, and the alternative
+        rule (minimise eval_loss) sits commented out beside the live one.
+        """
+        return f"max_eval_trial_avg_{self.metric}"
+
     def save_run_summary(self):
         """Write the per-run facts needed to plot a scaling point.
 
@@ -343,6 +357,7 @@ class Trainer():
             "num_epochs_configured": self.config.training.num_epochs,
             "num_epochs_recorded": len(self.train_losses),
             "metric_name": self.metric,
+            "selection_rule": self.selection_rule(),
             "best_epoch": self.best_epoch,
             "best_metric": self.best_metric,
             "final_train_loss": self.train_losses[-1] if self.train_losses else None,
