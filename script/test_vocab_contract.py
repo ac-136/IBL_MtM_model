@@ -32,7 +32,9 @@ from ndt.vocab import (VocabularyError, vocab_metadata, RULE_MANIFEST,  # noqa: 
                        RULE_LEGACY, RULE_SINGLE_EID, RULE_SORTED,
                        CHECKPOINT_FORMAT_VERSION, LEGACY_FORMAT_VERSION,
                        vocab_for_sessions, vocab_for_single_session,
-                       assert_eid_in_vocab)
+                       assert_eid_in_vocab, classify_state_dict_keys,
+                       filter_transfer_state_dict, SESSION_SPECIFIC_PREFIXES,
+                       SHARED_PREFIXES)
 
 A = "0cad7ea8-8e6c-4ad1-a5c5-53fbb2df1a63"
 B = "5dcee0eb-b34d-4652-acc3-d10afc6eae68"
@@ -52,11 +54,20 @@ def check(name, fn, expect_error=None):
     results.append((ok, name, "no error" if ok else f"expected {expect_error.__name__}"))
 
 
-def build(vocab, num_neurons):
+def build(vocab, num_neurons, seed=None):
+    """Build an NDT1. `seed` overrides the config seed.
+
+    The transfer fixture below MUST build its two models with different seeds.
+    With the same seed the target's freshly-initialised weights are bit-identical
+    to the source's, which makes "inherited" and "fresh" indistinguishable and
+    both transfer assertions vacuous -- the shared one passes without anything
+    having loaded, and the session-specific one fails without anything having
+    been inherited.
+    """
     cfg = build_config()
     meta = {"num_neurons": num_neurons, "num_sessions": len(vocab), "eids": set(vocab)}
     cfg = update_config(cfg, meta)
-    set_seed(cfg.seed)
+    set_seed(cfg.seed if seed is None else seed)
     return NDT1(cfg.model, **cfg.method.model_kwargs, **meta,
                 session_vocab=vocab), cfg.model, meta
 
@@ -162,6 +173,79 @@ def main():
                 **vocab_metadata([A, B, OUTSIDE], RULE_MANIFEST)}, drifted)
     check("pickle whose metadata disagrees with its live module -> fails",
           lambda: load_pickled_model(drifted), expect_error=VocabularyError)
+
+    # ================================================================
+    # Transfer contract: the equal-cluster-count case
+    # ================================================================
+    # A natural same-count pair does not have to exist in the data -- the fixture
+    # constructs one. Relying on finding two real sessions with identical cluster
+    # counts would make this test's coverage an accident of the pool.
+    N = 300
+    src, src_cfg, _ = build([A], [N], seed=42)
+    dst, _, _ = build([B], [N], seed=7)   # same cluster count, different session AND seed
+    src_sd, dst_sd = src.state_dict(), dst.state_dict()
+
+    check("source and target have identical key sets (the dangerous case)",
+          lambda: None if set(src_sd) == set(dst_sd) else
+          (_ for _ in ()).throw(AssertionError("key sets differ; fixture is not testing the hazard")))
+    # Non-vacuity guard. Some tensors are constant-initialised (LayerNorm weights
+    # at 1, etc.) and so are seed-independent by construction; those can never
+    # distinguish "inherited" from "fresh" and are excluded from the shared-side
+    # check. The session-specific tensors are all random-initialised, so every one
+    # of them MUST differ pre-load or the "stayed fresh" assertion below proves
+    # nothing.
+    pre_same = {k for k in src_sd if torch.equal(src_sd[k], dst_sd[k])}
+    spec_set = set(classify_state_dict_keys(src_sd.keys())[1])
+    check(f"no session-specific tensor is seed-independent "
+          f"({len(pre_same)}/{len(src_sd)} constant-init overall, none of them specific)",
+          lambda: None if not (pre_same & spec_set) else
+          (_ for _ in ()).throw(AssertionError(
+              f"seed-independent session-specific tensors make the freshness check "
+              f"vacuous: {sorted(pre_same & spec_set)}")))
+
+    shared, specific = classify_state_dict_keys(src_sd.keys())
+    check(f"every key classified: {len(shared)} shared + {len(specific)} session-specific"
+          f" == {len(src_sd)}",
+          lambda: None if len(shared) + len(specific) == len(src_sd) else
+          (_ for _ in ()).throw(AssertionError("partition does not cover the checkpoint")))
+
+    check("an unrecognised key is refused, not silently transferred",
+          lambda: classify_state_dict_keys(list(src_sd) + ["encoder.brand_new_module.weight"]),
+          expect_error=VocabularyError)
+
+    filtered = filter_transfer_state_dict(src_sd, verbose=False)
+    check("filter keeps exactly the shared set",
+          lambda: None if set(filtered) == set(shared) else
+          (_ for _ in ()).throw(AssertionError("filtered set != shared set")))
+
+    missing, unexpected = dst.load_state_dict(filtered, strict=False)
+    check("no unexpected keys when loading the filtered source",
+          lambda: None if not unexpected else
+          (_ for _ in ()).throw(AssertionError(f"unexpected: {unexpected}")))
+    check("exactly the session-specific keys are left un-loaded",
+          lambda: None if set(missing) == set(specific) else
+          (_ for _ in ()).throw(AssertionError(f"missing != specific: {set(missing) ^ set(specific)}")))
+
+    after = dst.state_dict()
+    same = [k for k in shared if torch.equal(after[k], src_sd[k])]
+    check(f"ALL {len(shared)} shared tensors inherited exactly from the source",
+          lambda: None if len(same) == len(shared) else
+          (_ for _ in ()).throw(AssertionError(
+              f"{len(shared)-len(same)} shared tensor(s) did not transfer: "
+              f"{sorted(set(shared)-set(same))[:5]}")))
+
+    diff = [k for k in specific if not torch.equal(after[k], src_sd[k])]
+    check(f"ALL {len(specific)} session-specific tensors stayed fresh, "
+          f"despite identical shapes",
+          lambda: None if len(diff) == len(specific) else
+          (_ for _ in ()).throw(AssertionError(
+              f"{len(specific)-len(diff)} session-specific tensor(s) were inherited: "
+              f"{sorted(set(specific)-set(diff))[:5]}")))
+
+    check("decoder.* is on the SHARED side, not misfiled with stitch_decoder.*",
+          lambda: None if any(k.startswith("decoder.") for k in shared)
+          and not any(k.startswith("decoder.") for k in specific) else
+          (_ for _ in ()).throw(AssertionError("decoder.* misclassified")))
 
     # ------------------------------------------------------------------ report
     print("=" * 72)

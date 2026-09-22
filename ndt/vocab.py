@@ -166,3 +166,89 @@ def assert_pickle_consistent(ckpt, model):
             f"the pickled module carries a {len(live)}-entry one. The checkpoint "
             f"cannot be interpreted; its provenance and its weights disagree."
         )
+
+
+# --------------------------------------------------------------------------
+# Session-specific parameters, and the transfer contract
+# --------------------------------------------------------------------------
+#
+# Transferring a model pretrained on session S onto a different session H must
+# keep the shared backbone and re-initialise everything that belongs to S.
+#
+# This used to happen only half deliberately. `embed_session.weight` was popped
+# explicitly, but the stitcher and decoder stayed fresh purely because their
+# parameter names embed the *cluster count* --
+# `encoder.stitcher.stitcher_dict.406.weight` -- so with differing counts they
+# found no match and `strict=False` dropped them. Two sessions with the same
+# cluster count would have loaded S's input and output projections straight
+# into H: matching shapes, no error, wrong session.
+#
+# Both lists are kept, not just the exclusions, so that a session-specific
+# module added later cannot inherit by default merely for being absent from a
+# denylist. `classify_state_dict_keys` refuses to classify anything it does not
+# recognise, so a new module breaks loudly instead of transferring silently.
+
+SESSION_SPECIFIC_PREFIXES = (
+    "encoder.embedder.embed_session.",
+    "encoder.stitcher.",
+    "stitch_decoder.",
+)
+
+# The embedder's shared children are listed individually rather than as a
+# blanket `encoder.embedder.`, so no prefix-ordering rule is needed to stop it
+# swallowing `embed_session`.
+#
+# `decoder.` is shared and is the entry most easily misfiled, sitting one
+# underscore away from the session-specific `stitch_decoder.`. It is
+# [n_channels, hidden] regardless of cluster count, so it belongs to the
+# backbone; excluding it would throw away most of what transfer is for.
+SHARED_PREFIXES = (
+    "encoder.embedder.embed_pos.",
+    "encoder.embedder.embed_spikes.",
+    "encoder.embedder.projection.",
+    "encoder.layers.",
+    "encoder.out_norm.",
+    "decoder.",
+)
+
+
+def classify_state_dict_keys(keys):
+    """Partition checkpoint keys into (shared, session_specific).
+
+    Raises VocabularyError if any key matches neither list. That is the point:
+    an unrecognised parameter is exactly the case where a silent default would
+    be wrong, and there is no safe guess about whether it belongs to a session.
+    """
+    shared, specific, unknown = [], [], []
+    for k in keys:
+        if k.startswith(SESSION_SPECIFIC_PREFIXES):
+            specific.append(k)
+        elif k.startswith(SHARED_PREFIXES):
+            shared.append(k)
+        else:
+            unknown.append(k)
+    if unknown:
+        raise VocabularyError(
+            f"{len(unknown)} checkpoint key(s) match neither SHARED_PREFIXES nor "
+            f"SESSION_SPECIFIC_PREFIXES, so it cannot be decided whether they "
+            f"belong to a session: {sorted(unknown)[:8]}. Add them to one list in "
+            f"ndt/vocab.py -- do not let them transfer by default."
+        )
+    return shared, specific
+
+
+def filter_transfer_state_dict(state_dict, verbose=True):
+    """Keep only the shared backbone from a pretrained checkpoint.
+
+    Everything session-specific is dropped so the target initialises it fresh.
+    Key names are logged, not just counts, so the split is auditable from the
+    job log rather than taken on trust.
+    """
+    shared, specific = classify_state_dict_keys(state_dict.keys())
+    if verbose:
+        print(f"[transfer] loading {len(shared)} shared tensor(s) from the source checkpoint")
+        print(f"[transfer] dropping {len(specific)} session-specific tensor(s), "
+              f"re-initialised for the target:")
+        for k in sorted(specific):
+            print(f"[transfer]   drop {k}")
+    return {k: state_dict[k] for k in shared}

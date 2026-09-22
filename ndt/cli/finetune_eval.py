@@ -14,7 +14,7 @@ from ..loader.make_loader import make_loader
 from ..utils.utils import set_seed, dummy_load
 from ..utils.config_utils import config_from_kwargs, update_config
 from ..models.ndt1 import NDT1
-from ..vocab import vocab_for_single_session
+from ..vocab import vocab_for_single_session, filter_transfer_state_dict
 import torch
 import os
 from pathlib import Path
@@ -229,15 +229,29 @@ def run(args):
             if TRAINED or num_train_sessions > 1:
                 print('\nLoad pretrain model from:', pretrain_model_path)
                 print()
-                # load weights that can be found in the pretrain model
-                if DATA_TYPE != "datasets":
-                    ckpt = torch.load(pretrain_model_path)['model'].state_dict()
-                    # Remove session embedding weights from checkpoint
-                    ckpt.pop("encoder.embedder.embed_session.weight", None)
-
-                    model.load_state_dict(ckpt, strict=False)
-                else:
-                    model.load_state_dict(torch.load(pretrain_model_path)['model'].state_dict(), strict=False)
+                # Transfer contract: inherit the shared backbone from the source,
+                # re-initialise everything that belongs to the source's session.
+                #
+                # This replaces two branches. The old code popped only
+                # embed_session.weight, and relied on the stitcher and decoder keys
+                # embedding the cluster count so they would fail to match -- which
+                # breaks silently the moment source and target share a count. The
+                # other branch, taken when DATA_TYPE == "datasets", loaded the
+                # session embedding too; the host data root is literally named
+                # `datasets`, so that was a live trap rather than a dead path.
+                ckpt = torch.load(pretrain_model_path)['model'].state_dict()
+                ckpt = filter_transfer_state_dict(ckpt)
+                missing, unexpected = model.load_state_dict(ckpt, strict=False)
+                # Everything session-specific is expected to be missing, since it
+                # was deliberately dropped. Anything *unexpected* is not: it would
+                # mean the source carries a parameter this model has no slot for.
+                if unexpected:
+                    raise ValueError(
+                        f"Source checkpoint has {len(unexpected)} tensor(s) with no "
+                        f"place in the target model: {sorted(unexpected)[:8]}"
+                    )
+                print(f"[transfer] {len(missing)} tensor(s) left at their fresh "
+                      f"initialisation for this session")
             else:
                 print('Train from scratch.')
 
