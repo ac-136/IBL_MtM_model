@@ -14,7 +14,7 @@ from ..loader.make_loader import make_loader
 from ..utils.utils import set_seed, dummy_load
 from ..utils.config_utils import config_from_kwargs, update_config
 from ..models.ndt1 import NDT1
-from ..compat import legacy_session_vocab
+from ..vocab import vocab_for_single_session
 import torch
 import os
 from pathlib import Path
@@ -202,11 +202,16 @@ def run(args):
         
             config = update_config(config, meta_data)
             model_class = NAME2MODEL[config.model.model_class]
-            # 1c-i: the session vocabulary is now passed explicitly instead of being read
-            # from data/target_eids.txt at model-import time. legacy_session_vocab() is the
-            # original 40-entry list in its original order, so behaviour is unchanged.
+            # 1c-ii: the finetune model's vocabulary is the session being finetuned
+            # on, not the pretrained model's. That is consistent with how the
+            # transfer below works: encoder.embedder.embed_session.weight is
+            # explicitly popped from the pretrained state_dict, so the session
+            # embedding is never carried over and there is no row-meaning to
+            # inherit. The table is sized to, and means, this session.
+            session_vocab, vocabulary_ordering_rule = vocab_for_single_session(eid)
+            print(f"session vocab ({vocabulary_ordering_rule}): {session_vocab}")
             model = model_class(config.model, **config.method.model_kwargs, **meta_data,
-                                session_vocab=legacy_session_vocab())
+                                session_vocab=session_vocab)
             model = accelerator.prepare(model)
 
             # load pretrain model
@@ -280,6 +285,7 @@ def run(args):
                 "lr_scheduler": lr_scheduler,
                 "config": config,
                 "stitching": config.model.encoder.stitching,
+                "vocabulary_ordering_rule": vocabulary_ordering_rule,
             }
             trainer = make_trainer(
                 model=model,

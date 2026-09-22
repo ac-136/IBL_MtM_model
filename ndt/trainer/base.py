@@ -4,6 +4,7 @@ import os
 import time
 import json
 from ..utils.utils import move_batch_to_device, metrics_list, plot_gt_pred, plot_neurons_r2
+from ..vocab import vocab_metadata
 from tqdm import tqdm
 
 class Trainer():
@@ -45,6 +46,10 @@ class Trainer():
         # point reproducible; `eids` is a set, so it is sorted at write time.
         self.eids = kwargs.get("eids", None)
         self.num_sessions = kwargs.get("num_sessions", None)
+        # 1c-ii provenance. The vocabulary itself is read off the model, which is
+        # the thing that actually owns the row ordering; only the rule that
+        # produced it has to be told to us.
+        self.vocabulary_ordering_rule = kwargs.get("vocabulary_ordering_rule", None)
         
         if self.config.method.model_kwargs.clf:
             self.metric = 'acc'
@@ -371,6 +376,9 @@ class Trainer():
             "num_sessions": self.num_sessions,
             "num_neurons": self.num_neurons,
             "eids": eids,
+            # 1c-ii provenance, mirroring what the checkpoints carry.
+            **(vocab_metadata(self.session_vocab(), self.vocabulary_ordering_rule)
+               if self.session_vocab() is not None else {}),
             "stitching": self.stitching,
             "masking_mode": self.masking_mode,
             "seed": self.config.get("seed", None),
@@ -391,6 +399,14 @@ class Trainer():
         except Exception as e:
             print(f"could not save resolved config: {type(e).__name__}: {e}")
 
+    def session_vocab(self):
+        """The vocabulary this model was built with, or None if it has no session
+        embedding. Read from the model rather than tracked separately, so the
+        recorded provenance cannot drift from the weights it describes."""
+        embedder = getattr(getattr(self.model, "encoder", None), "embedder", None)
+        vocab = getattr(embedder, "eid_lookup", None)
+        return list(vocab) if vocab is not None else None
+
     def save_model(self, name="last", epoch=0):
         # save model
         print(f"saving model: {name} to {self.log_dir}")
@@ -398,5 +414,10 @@ class Trainer():
             "model": self.model,
             "epoch": epoch,
         }
+        # 1c-ii: row indices in embed_session.weight only mean something relative
+        # to this list, so a checkpoint without it cannot be interpreted.
+        vocab = self.session_vocab()
+        if vocab is not None:
+            dict_config.update(vocab_metadata(vocab, self.vocabulary_ordering_rule))
         torch.save(dict_config, os.path.join(self.log_dir, f"model_{name}.pt"))
         

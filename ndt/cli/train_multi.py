@@ -12,7 +12,7 @@ from ..loader.make_loader import make_loader
 from ..utils.utils import set_seed
 from ..utils.config_utils import config_from_kwargs, update_config
 from ..models.ndt1 import NDT1
-from ..compat import legacy_session_vocab
+from ..vocab import vocab_for_sessions
 import torch
 import os
 from ..trainer.make import make_trainer
@@ -151,11 +151,15 @@ def run(args):
 
     config = update_config(config, meta_data)
     model_class = NAME2MODEL[config.model.model_class]
-    # 1c-i: the session vocabulary is now passed explicitly instead of being read
-    # from data/target_eids.txt at model-import time. legacy_session_vocab() is the
-    # original 40-entry list in its original order, so behaviour is unchanged.
+    # 1c-ii: the vocabulary is this run's own training sessions, ordered by the
+    # manifest when one was supplied. meta_data["eids"] is a set, so it can never
+    # define row order on its own; vocab_for_sessions falls back to sorted only
+    # when nothing ordered was given, and says so in the recorded rule.
+    session_vocab, vocabulary_ordering_rule = vocab_for_sessions(
+        meta_data["eids"], ordered_eids=config.data.train_session_eid)
+    print(f"session vocab ({vocabulary_ordering_rule}): {len(session_vocab)} entries")
     model = model_class(config.model, **config.method.model_kwargs, **meta_data,
-                        session_vocab=legacy_session_vocab())
+                        session_vocab=session_vocab)
     model = accelerator.prepare(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
@@ -171,6 +175,7 @@ def run(args):
         "lr_scheduler": lr_scheduler,
         "config": config,
         "stitching": config.encoder.stitching,
+        "vocabulary_ordering_rule": vocabulary_ordering_rule,
     }
     trainer = make_trainer(
         model=model,

@@ -11,7 +11,7 @@ from ..loader.make_loader import make_loader
 from ..utils.utils import set_seed
 from ..utils.config_utils import config_from_kwargs, update_config
 from ..models.ndt1 import NDT1
-from ..compat import legacy_session_vocab
+from ..vocab import vocab_for_single_session
 import torch
 import os
 from ..trainer.make import make_trainer
@@ -156,11 +156,14 @@ def run(args):
 
     config = update_config(config, meta_data)
     model_class = NAME2MODEL[config.model.model_class]
-    # 1c-i: the session vocabulary is now passed explicitly instead of being read
-    # from data/target_eids.txt at model-import time. legacy_session_vocab() is the
-    # original 40-entry list in its original order, so behaviour is unchanged.
+    # 1c-ii: the vocabulary is this run's own session, not the shipped 40. A
+    # one-entry table is what lets an arbitrary eid train at all, and it changes
+    # the embedding row from 10 to 0 for the old canonical session -- a
+    # legitimate difference that retires baseline_pre_tier1.
+    session_vocab, vocabulary_ordering_rule = vocab_for_single_session(eid)
+    print(f"session vocab ({vocabulary_ordering_rule}): {session_vocab}")
     model = model_class(config.model, **config.method.model_kwargs, **meta_data,
-                        session_vocab=legacy_session_vocab())
+                        session_vocab=session_vocab)
     model = accelerator.prepare(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr, weight_decay=config.optimizer.wd, eps=config.optimizer.eps)
@@ -176,6 +179,7 @@ def run(args):
         "lr_scheduler": lr_scheduler,
         "config": config,
         "stitching": config.encoder.stitching,
+        "vocabulary_ordering_rule": vocabulary_ordering_rule,
     }
     trainer = make_trainer(
         model=model,

@@ -96,9 +96,115 @@ def resave_as_state_dict(src_path, dst_path, map_location="cpu"):
     class, so this is the durable fix for the 92 legacy checkpoints.
     """
     import torch
+    from .vocab import VOCAB_KEY, RULE_KEY, VERSION_KEY, read_checkpoint_vocab
+
     obj = load_checkpoint(src_path, map_location=map_location)
     out = {"state_dict": load_state_dict(src_path, map_location=map_location)}
     if isinstance(obj, dict) and "epoch" in obj:
         out["epoch"] = obj["epoch"]
+
+    # 1c-ii: the state_dict form is the durable one -- it is what survives edits
+    # to the model class -- so it has to carry the vocabulary too. Without this
+    # the conversion silently discards the only record of what the embedding
+    # rows mean, and a same-length reordering would then load without error.
+    # A legacy source has no recorded vocabulary; read_checkpoint_vocab infers
+    # the shipped ordering, which is what such a checkpoint was in fact built
+    # with, and says so.
+    model = obj.get("model") if isinstance(obj, dict) else None
+    embedder = getattr(getattr(model, "encoder", None), "embedder", None)
+    if getattr(embedder, "eid_lookup", None) is not None:
+        vocab, rule, version = read_checkpoint_vocab(obj, source=str(src_path))
+        out[VOCAB_KEY] = list(vocab)
+        out[RULE_KEY] = rule
+        out[VERSION_KEY] = version
+
     torch.save(out, dst_path)
     return dst_path
+
+
+def load_pickled_model(path, session_vocab=None, map_location="cpu"):
+    """Load a pickled-module checkpoint under the 1c-ii load contract.
+
+    The checkpoint is authoritative: its vocabulary defines what the embedding
+    rows mean, because those rows *are* its weights. Passing ``session_vocab``
+    asserts what the caller believes that vocabulary to be, and any disagreement
+    fails rather than being silently overridden.
+
+    Returns ``(model, vocab, rule, version)``.
+    """
+    from .vocab import (read_checkpoint_vocab, assert_vocab_matches,
+                        assert_pickle_consistent)
+
+    ckpt = load_checkpoint(path, map_location=map_location)
+    model = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+
+    embedder = getattr(getattr(model, "encoder", None), "embedder", None)
+    if getattr(embedder, "eid_lookup", None) is None:
+        return model, None, None, None
+
+    # A pickle carries a live module *and* recorded metadata, so the two can
+    # drift apart; if they do, the recorded provenance is a lie.
+    assert_pickle_consistent(ckpt, model)
+
+    vocab, rule, version = read_checkpoint_vocab(ckpt, source=str(path))
+    assert_vocab_matches(vocab, session_vocab, source=str(path))
+
+    # A legacy pickle predates the metadata but still carries a live lookup; the
+    # inferred vocabulary must agree with it or the inference was wrong.
+    live = list(embedder.eid_lookup)
+    if list(vocab) != live:
+        from .vocab import VocabularyError
+        raise VocabularyError(
+            f"Inferred a {len(vocab)}-entry vocabulary for {path} but the pickled "
+            f"module carries {len(live)} entries. Its row meanings cannot be "
+            f"established, so it cannot be loaded safely."
+        )
+    return model, vocab, rule, version
+
+
+def load_model_from_state_dict(path, config, session_vocab=None,
+                               map_location="cpu", **model_kwargs):
+    """Build a model from a portable .state_dict.pt, metadata first.
+
+    The ordering here is required, not tidy. ``NDT1.__init__`` sizes
+    ``nn.Embedding(len(vocab), hidden_size)`` from the vocabulary, so the
+    vocabulary has to be known *before* the model is constructed. Constructing
+    first and reconciling afterwards gives either a shape error or -- far worse
+    -- a table of the right shape in the wrong order, which loads cleanly and
+    silently attributes every session's learned embedding to a different
+    session.
+
+        load checkpoint metadata
+            -> get session_vocab
+            -> construct NDT1 using that vocab
+            -> load_state_dict
+
+    Returns ``(model, vocab, rule, version)``.
+    """
+    from .models.ndt1 import NDT1
+    from .vocab import read_checkpoint_vocab, assert_vocab_matches, VocabularyError
+
+    ckpt = load_checkpoint(path, map_location=map_location)
+    if not isinstance(ckpt, dict) or "state_dict" not in ckpt:
+        raise ValueError(
+            f"{path} is not a portable state_dict checkpoint; use "
+            f"resave_as_state_dict() to produce one."
+        )
+    sd = ckpt["state_dict"]
+
+    vocab, rule, version = read_checkpoint_vocab(ckpt, source=str(path))
+    vocab = assert_vocab_matches(vocab, session_vocab, source=str(path))
+
+    model = NDT1(config, session_vocab=vocab, **model_kwargs)
+    try:
+        model.load_state_dict(sd)
+    except RuntimeError as e:
+        emb = sd.get("encoder.embedder.embed_session.weight")
+        rows = tuple(emb.shape)[0] if emb is not None else None
+        raise VocabularyError(
+            f"state_dict from {path} does not fit a model built with its own "
+            f"{len(vocab)}-entry vocabulary"
+            + (f" (embed_session has {rows} rows)" if rows is not None else "")
+            + f". Underlying error: {e}"
+        ) from e
+    return model, vocab, rule, version

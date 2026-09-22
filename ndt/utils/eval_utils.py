@@ -5,7 +5,8 @@ from .dataset_utils import load_ibl_dataset_locally, load_locally, session_data_
 from .utils import set_seed, move_batch_to_device, metrics_list
 from .config_utils import config_from_kwargs, update_config
 from ..models.ndt1 import NDT1
-from ..compat import legacy_session_vocab
+from ..compat import load_pickled_model
+from ..vocab import vocab_for_single_session
 from scipy.special import gammaln
 from sklearn.metrics import r2_score
 from sklearn.cluster import SpectralClustering
@@ -71,9 +72,16 @@ def load_model_data_local(**kwargs):
     print(model_path)
 
     model_class = NAME2MODEL[config.model.model_class]
+    # This model is overwritten on the very next line, so it is dead as a model --
+    # but it is a live RNG consumer, and removing it would shift every later draw.
+    # Its vocabulary is irrelevant for the same reason; the checkpoint's governs.
+    session_vocab, _rule = vocab_for_single_session(eid)
     model = model_class(config.model, **config.method.model_kwargs, **meta_data,
-                        session_vocab=legacy_session_vocab())    
-    model = torch.load(model_path)['model']
+                        session_vocab=session_vocab)
+    # 1c-ii load contract: the checkpoint is authoritative. Passing no vocabulary
+    # means "use whatever it says"; it is logged, and a legacy checkpoint has the
+    # shipped ordering inferred rather than guessed.
+    model, ckpt_vocab, ckpt_rule, ckpt_version = load_pickled_model(model_path)
 
     # ### IF NO TRAINING ###
     # ## MtM data ##
@@ -495,13 +503,14 @@ def behavior_decoding(**kwargs):
         os.makedirs(log_dir)
 
     model_class = NAME2MODEL[config.model.model_class]
+    session_vocab, _rule = vocab_for_single_session(eid)
     model = model_class(config.model, **config.method.model_kwargs, **meta_data,
-                        session_vocab=legacy_session_vocab())
+                        session_vocab=session_vocab)
     if use_logreg:
-        model = torch.load(model_path)['model']
+        model, _, _, _ = load_pickled_model(model_path)
 
     if not kwargs['from_scratch'] and not use_logreg:
-        pretrained_model = torch.load(model_path)['model']
+        pretrained_model, _, _, _ = load_pickled_model(model_path)
         model.encoder = pretrained_model.encoder
         if kwargs['freeze_encoder']:
             for param in model.encoder.parameters():
