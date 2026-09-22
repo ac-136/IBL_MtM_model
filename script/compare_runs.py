@@ -92,8 +92,8 @@ def load_arrays(path):
     return None
 
 
-COMPARE_NAMES = {"model_best.pt", "model_last.pt", "loss_history.npz",
-                 "bps.npy", "r2.npy"}
+COMPARE_NAMES = {"model_best.pt", "model_last.pt", "model_epoch.pt",
+                 "loss_history.npz", "bps.npy", "r2.npy"}
 
 
 def interesting(p):
