@@ -171,8 +171,12 @@ class Capture:
         self.orig = self.eu.bits_per_spike
 
         def rec(rates, spikes):
-            # copy BEFORE the call: neg_log_likelihood mutates zero rates in place
-            self.calls.append((np.array(rates, copy=True), np.array(spikes, copy=True)))
+            # copy BEFORE the call: neg_log_likelihood mutates zero rates in place.
+            # order="K" preserves the caller's memory layout. forward_pred passes
+            # non-contiguous views (strides (4, 436, 4360)), and float32 np.sum's
+            # pairwise summation order depends on layout: a C-order copy
+            # reproduces bps.npy only to ~4e-6, a layout-preserving one exactly.
+            self.calls.append((rates.copy(order="K"), spikes.copy(order="K")))
             return self.orig(rates, spikes)
 
         self.eu.bits_per_spike = rec
@@ -195,7 +199,8 @@ def summarise(calls, save_path, log, tag):
 
     # capture fidelity: the unmodified function on the captured arrays reproduces
     # bps.npy exactly -- proves both the arrays and their ORDER
-    redo = np.array([eu.bits_per_spike(p.copy(), g.copy()) for p, g in calls])
+    redo = np.array([eu.bits_per_spike(p.copy(order="K"), g.copy(order="K"))
+                     for p, g in calls])
     redo = np.where(np.isinf(redo), np.nan, redo)
     exact = np.array_equal(redo, saved, equal_nan=True)
     log.append((exact, f"{tag}: captured arrays reproduce bps.npy exactly", ""))
