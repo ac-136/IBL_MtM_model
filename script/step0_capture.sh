@@ -23,7 +23,7 @@
 #SBATCH --job-name=step0-cap
 #SBATCH --output=../results_parity/step0-cap-%j.out
 #SBATCH --error=../results_parity/step0-cap-%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=00:20:00
 #SBATCH --mem=96g
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
