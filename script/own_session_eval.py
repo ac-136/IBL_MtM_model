@@ -46,7 +46,10 @@ OUT_ROOT = RESULTS / "pilot" / "own_session"
 DATA_ROOT = pf.DATA_ROOT
 BASE_PATH = "/work/nvme/beml/ac136/IBL_MTM/data"
 DATA_TYPE = "processed_mtm"
-STAGE2_LOGS = REPO / "results_parity"
+# Absolute, like RESULTS: Slurm logs are gitignored and exist only in the main
+# checkout, so a REPO-relative path finds nothing when this runs from a pinned
+# worktree -- which is how it is submitted. Audit 5a refused on exactly that.
+STAGE2_LOGS = Path("/projects/beml/ac136/IBL_MtM_model/results_parity")
 UNTRAINED_SEEDS = (0, 1, 2)
 N_STATE_TENSORS = 94
 
