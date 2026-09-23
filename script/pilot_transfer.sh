@@ -148,7 +148,13 @@ echo
 echo "=================================================="
 echo "transfer ${SRC_EID} -> ${TGT_EID} finished, exit=${rc}"
 if [ $rc -eq 0 ]; then
-    find "$RUN_DIR" -type f \( -name '*.npy' -o -name '*.npz' -o -name '*.json' \) \
+    # *.pt included deliberately. An earlier version filtered on npy/npz/json
+    # only, so the three checkpoints and their .state_dict.pt files were absent
+    # from every log -- while the canary release gate explicitly REQUIRES
+    # .state_dict.pt. A listing that reads as a complete inventory but cannot
+    # show the artifact being gated on is the wrong instrument for that gate.
+    find "$RUN_DIR" -type f \( -name '*.npy' -o -name '*.npz' -o -name '*.json' \
+                             -o -name '*.pt' \) \
         | sed "s|^${RUN_DIR}/|  |" | sort
 fi
 echo "=================================================="
