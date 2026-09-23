@@ -203,15 +203,45 @@ def main():
                 any_diag = True
     # criterion 10: cohort split. A property of the SET, computed here rather
     # than reported as "none" without being evaluated.
-    coh = {}
-    for r in scored:
-        coh.setdefault(r["tgt_coh"], []).append(r["co_smooth_bps"])
-    if len(coh) >= 2:
-        print("  [info] 10. co_smooth bps by TARGET cohort: "
-              + ", ".join(f"{k} {np.mean(v):+.4f} (n={len(v)})" for k, v in sorted(coh.items()))
-              + "\n         two dev targets per cohort is too few to conclude a cohort "
-                "effect; it would justify widening the pilot, not rejecting the recipe")
+    for axis, key in (("TARGET", "tgt_coh"), ("SOURCE", "src_coh")):
+        coh = {}
+        for r in scored:
+            coh.setdefault(r[key], []).append(r["co_smooth_bps"])
+        if len(coh) >= 2:
+            print(f"  [info] 10. co_smooth bps by {axis} cohort: "
+                  + ", ".join(f"{k} {np.mean(v):+.4f} (n={len(v)})"
+                              for k, v in sorted(coh.items())))
+            any_diag = True
+    print("         too few sessions per cohort to conclude a cohort effect; that "
+          "would justify\n         widening the pilot, not rejecting the recipe")
+
+    # Are the negatives CONCENTRATED? Ten pairs are five sources x two targets,
+    # not ten independent observations. If every negative shares one source, the
+    # aggregate fraction in criterion 5 overstates how scattered the problem is,
+    # and the honest reading is "one bad source", not "20% of pairs fail". The
+    # plan attaches this investigation to the 50-79% band, but concentration is
+    # worth surfacing at ANY fraction -- it changes what the number means.
+    negs = [r for r in scored if r["co_smooth_bps"] <= 0]
+    if negs:
+        nsrc, ntgt = {r["src"] for r in negs}, {r["tgt"] for r in negs}
+        print(f"  [warn] negatives: {len(negs)} pair(s); "
+              f"{len(nsrc)} distinct source(s), {len(ntgt)} distinct target(s)")
+        if len(nsrc) == 1:
+            s = next(iter(nsrc))
+            print(f"         ALL negatives share source {s[:8]} -- concentrated, not "
+                  f"scattered.\n         Read criterion 5 per source as well: "
+                  f"a single weak source is a different\n         problem from a "
+                  f"recipe that fails broadly.")
+        if len(ntgt) == 1:
+            print(f"         ALL negatives share target {next(iter(ntgt))[:8]}")
         any_diag = True
+        # the same fraction computed per source rather than per pair
+        by_s = {}
+        for r in scored:
+            by_s.setdefault(r["src"], []).append(r["co_smooth_bps"])
+        pos_s = sum(1 for v in by_s.values() if np.mean(v) > 0)
+        print(f"  [info] criterion 5 recomputed PER SOURCE: {pos_s}/{len(by_s)} sources "
+              f"positive on average ({100*pos_s/len(by_s):.0f}%)")
     if not any_diag:
         print("  [ok] no diagnostic warnings fired (all diagnostics were evaluated)")
 
