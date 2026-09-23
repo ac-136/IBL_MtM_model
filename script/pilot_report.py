@@ -77,9 +77,23 @@ def assess(summary, bench):
 
 def main():
     root = Path(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_ROOT)
-    runs = sorted(root.glob("**/run_summary.json"))
-    if not runs:
+    found = sorted(root.glob("**/run_summary.json"))
+    if not found:
         sys.exit(f"no run_summary.json under {root}")
+
+    # Stage 3 writes its transfer runs under the SAME pilot root, and their
+    # run_summary eid is the TARGET session -- which is not in SESSIONS, so they
+    # would appear here as "?" rows and be silently folded into the cross-run
+    # diagnostics alongside the pretrains. Two different measurements in one
+    # table is worse than no table. Report on pretrains only and say so.
+    runs = [r for r in found if "/pretrain/" in str(r)]
+    skipped = len(found) - len(runs)
+    if not runs:
+        sys.exit(f"no PRETRAIN run_summary.json under {root} "
+                 f"({skipped} transfer run(s) found; use stage3_report.py for those)")
+    if skipped:
+        print(f"note: {skipped} transfer run(s) excluded -- this report covers Stage-2 "
+              f"pretraining only. Use script/stage3_report.py for Stage 3.\n")
 
     rows, all_hard, all_diag = [], [], []
     for rs in runs:
