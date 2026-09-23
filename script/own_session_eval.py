@@ -17,6 +17,12 @@ arrays it scores. The saved bps.npy is still produced by the unmodified function
 and the capture is checked against it bit for bit.
 
 --dry-run runs the audit asserts only: CPU, no eval.
+
+Two modes. Default (pilot) mode is the Stage 3-diag run exactly as it was: the
+five Stage-2 sources, the best checkpoint, three untrained references.
+``--manifest PATH`` is the learnability campaign: any session in that manifest,
+the best AND last checkpoints, no untrained references, and the audits that
+depended on pilot-only artifacts generalised (see ``audit``).
 """
 
 import argparse
@@ -37,7 +43,8 @@ import torch  # noqa: E402
 
 import stage3_preflight as pf  # noqa: E402  (SOURCES, DEV_TARGETS, manifests)
 from learnability import (per_trial_terms, bps_from_terms,  # noqa: E402
-                          bootstrap_session_mean, band, variation_ratios, BAND_RULE)
+                          bootstrap_session_mean, band, variation_ratios, BAND_RULE,
+                          session_covariates, curve_features)
 
 RESULTS = Path("/work/nvme/beml/ac136/IBL_MTM/results")
 PRETRAIN = RESULTS / "pilot" / "pretrain"
@@ -70,9 +77,40 @@ def parquet_rows(eid, split):
     return pq.ParquetFile(Path(DATA_ROOT) / eid / "data" / f"{split}.parquet").metadata.num_rows
 
 
-def paths(eid):
-    d = PRETRAIN / f"src_{eid}" / "train" / eid
-    return d / "model_best.pt", d / "model_best.state_dict.pt", d / "run_summary.json"
+class Ctx:
+    """What differs between pilot mode and manifest mode."""
+
+    def __init__(self, manifest=None, pretrain_root=None, out_root=None):
+        self.manifest = None
+        if manifest:
+            m = json.loads(Path(manifest).read_text())
+            self.manifest = {s["eid"]: s for s in m["sessions"]}
+            self.manifest_path = str(manifest)
+        self.pretrain_root = Path(pretrain_root) if pretrain_root else PRETRAIN
+        self.out_root = Path(out_root) if out_root else OUT_ROOT
+        self.roles = ("best", "last") if self.manifest else ("best",)
+        self.untrained_seeds = () if self.manifest else UNTRAINED_SEEDS
+
+    def run_dir(self, eid):
+        # A manifest session may reuse its pilot pretrain; the manifest says where.
+        # .get: an eid outside the manifest must reach audit 6b and be REFUSED
+        # there with a named failure, not crash here first.
+        reuse = (self.manifest or {}).get(eid, {}).get("reuse_pilot_pretrain")
+        if reuse:
+            return Path(reuse)
+        return self.pretrain_root / f"src_{eid}" / "train" / eid
+
+    def variant(self, role):
+        # pilot mode keeps its original output name so its layout is unchanged
+        return "trained" if not self.manifest else role
+
+
+PILOT = Ctx()
+
+
+def paths(eid, role="best", ctx=PILOT):
+    d = ctx.run_dir(eid)
+    return d / f"model_{role}.pt", d / f"model_{role}.state_dict.pt", d / "run_summary.json"
 
 
 def state_equal(a, b):
@@ -83,8 +121,16 @@ def state_equal(a, b):
     return not bad, len(a), (f"{len(bad)} differ: {bad[:4]}" if bad else "all equal")
 
 
-def audit(eid, log):
-    """Asserts 1-6 from the plan. Uniform across sources; raises on failure."""
+def audit(eid, log, ctx=PILOT):
+    """Asserts 1-6 from the plan. Uniform across sessions; raises on failure.
+
+    Manifest mode differs only where pilot-only artifacts were assumed:
+    6b checks manifest membership; 1 compares against Stage-3 transfer records
+    only where they exist (otherwise the hash is recorded); 3b checks the
+    manifest's cluster count; 5 reads n_train from run_summary.json when it is
+    recorded there (since Stage 2c) and falls back to the Stage-2 log; 2d and 4
+    run for every evaluated checkpoint role.
+    """
     from ndt.compat import load_pickled_model
 
     def need(ok, name, detail=""):
@@ -92,7 +138,7 @@ def audit(eid, log):
         if not ok:
             raise AuditError(f"{name}: {detail}")
 
-    ckpt_p, sd_p, summ_p = paths(eid)
+    ckpt_p, sd_p, summ_p = paths(eid, "best", ctx)
 
     # 6 first: never evaluate anything that is not a Stage-2 source, and never
     # touch an official held-out session. Manifest sizes asserted so an empty
@@ -103,16 +149,26 @@ def audit(eid, log):
         heldin |= set(pf.read_list(os.path.join(pf.MANIFESTS, c, "heldin_eids.txt")))
     need(len(heldout) == 80 and len(heldin) == 321, "6a. manifests read at expected size",
          f"{len(heldout)} held-out / {len(heldin)} held-in")
-    need(eid in pf.SOURCES, "6b. eid is a Stage-2 source", eid[:8])
+    if ctx.manifest is None:
+        need(eid in pf.SOURCES, "6b. eid is a Stage-2 source", eid[:8])
+    else:
+        need(eid in ctx.manifest, "6b. eid is in the learnability manifest", eid[:8])
     need(eid not in heldout, "6c. eid is NOT an official held-out session", eid[:8])
 
-    for p in (ckpt_p, sd_p, summ_p):
-        need(p.is_file(), f"artifact present: {p.name}", str(p))
+    for role in ctx.roles:
+        for p in paths(eid, role, ctx):
+            need(p.is_file(), f"artifact present: {p.name}", str(p))
 
     # 1. the checkpoint evaluated is byte-identical to the one Stage 3 transferred
     h = sha256(ckpt_p)
+    hashes = {role: (h if role == "best" else sha256(paths(eid, role, ctx)[0]))
+              for role in ctx.roles}
     recs = sorted(TRANSFER.glob(f"from_{eid}/finetune/*/run_summary.json"))
-    need(len(recs) == 2, "1a. both Stage-3 transfer records exist", f"found {len(recs)}")
+    if ctx.manifest is None:
+        need(len(recs) == 2, "1a. both Stage-3 transfer records exist", f"found {len(recs)}")
+    elif not recs:
+        log.append((True, "1. no Stage-3 transfer records: sha256 recorded, not compared",
+                    h[:12]))
     for r in recs:
         rec = json.loads(r.read_text())
         need(rec.get("source_checkpoint_sha256") == h,
@@ -132,6 +188,15 @@ def audit(eid, log):
          str(ck.get("checkpoint_format_version")))
     need(ck.get("epoch") == summ.get("best_epoch"), "2d. checkpoint epoch == Stage-2 best_epoch",
          f"{ck.get('epoch')} vs {summ.get('best_epoch')}")
+    epochs = {"best": ck.get("epoch")}
+    if "last" in ctx.roles:
+        ck_last = torch.load(paths(eid, "last", ctx)[0], map_location="cpu", weights_only=False)
+        final = summ.get("num_epochs_recorded", 0) - 1
+        need(ck_last.get("epoch") == final, "2d'. last checkpoint epoch == final recorded epoch",
+             f"{ck_last.get('epoch')} vs {final}")
+        need(ck_last.get("session_vocab") == [eid], "2a'. last checkpoint session_vocab == [eid]",
+             str(ck_last.get("session_vocab")))
+        epochs["last"] = ck_last.get("epoch")
 
     # 3. geometry: the stitcher is keyed on THIS session's cluster count
     clusters = pf.clusters_of(eid)
@@ -140,25 +205,41 @@ def audit(eid, log):
                      for k in keys if "stitcher_dict." in k})
     need(stitch == [str(clusters)], "3a. stitcher keyed on the session's cluster count",
          f"keys {stitch} vs parquet {clusters}")
-    need(pf.SOURCES[eid][1] == clusters, "3b. cluster count matches the plan",
-         f"{pf.SOURCES[eid][1]} vs {clusters}")
+    planned = pf.SOURCES[eid][1] if ctx.manifest is None else ctx.manifest[eid]["clusters"]
+    need(planned == clusters, "3b. cluster count matches the plan",
+         f"{planned} vs {clusters}")
 
     # 4. the loaded module is exactly the durable state_dict -- nothing re-initialised
-    model, vocab, _rule, _ver = load_pickled_model(str(ckpt_p))
-    sd = torch.load(sd_p, map_location="cpu", weights_only=False)["state_dict"]
-    ok, n, detail = state_equal(model.state_dict(), sd)
-    need(ok and n == N_STATE_TENSORS, f"4. loaded module == .state_dict.pt ({n} tensors)", detail)
+    states = {}
+    for role in ctx.roles:
+        c_p, s_p, _ = paths(eid, role, ctx)
+        model, vocab, _rule, _ver = load_pickled_model(str(c_p))
+        sd = torch.load(s_p, map_location="cpu", weights_only=False)["state_dict"]
+        ok, n, detail = state_equal(model.state_dict(), sd)
+        # pilot mode keeps its original check label
+        tag = "4. loaded module" if ctx.manifest is None else f"4. {role}: loaded module"
+        need(ok and n == N_STATE_TENSORS, f"{tag} == .state_dict.pt ({n} tensors)", detail)
+        states[role] = sd
 
     # 5. splits: eval on test; pretraining saw train only
     n_train, n_test = parquet_rows(eid, "train"), parquet_rows(eid, "test")
-    logs = sorted(STAGE2_LOGS.glob(f"pilot-pre-{eid[:8]}-*.out"))
-    need(len(logs) == 1, "5a. exactly one Stage-2 log", f"{[l.name for l in logs]}")
-    m = re.search(r"Train dataset size:\s+(\d+)", logs[0].read_text(errors="replace"))
-    need(m and int(m.group(1)) == n_train,
-         "5b. Stage-2 trained on the train split only",
-         f"log {m.group(1) if m else '?'} vs train.parquet {n_train}")
-    return {"sha256": h, "clusters": clusters, "n_train": n_train, "n_test": n_test,
-            "best_epoch": summ.get("best_epoch"), "trained_state": sd}
+    if ctx.manifest is not None and "n_train" in summ:
+        # recorded by the pretraining run itself since Stage 2c (item 4)
+        need(summ["n_train"] == n_train and summ.get("pretrain_split_policy") == "train_only",
+             "5b. pretraining used the train split only (run_summary)",
+             f"run_summary {summ['n_train']} / {summ.get('pretrain_split_policy')} "
+             f"vs train.parquet {n_train}")
+    else:
+        logs = sorted(STAGE2_LOGS.glob(f"pilot-pre-{eid[:8]}-*.out"))
+        need(len(logs) == 1, "5a. exactly one Stage-2 log", f"{[l.name for l in logs]}")
+        m = re.search(r"Train dataset size:\s+(\d+)", logs[0].read_text(errors="replace"))
+        need(m and int(m.group(1)) == n_train,
+             "5b. Stage-2 trained on the train split only",
+             f"log {m.group(1) if m else '?'} vs train.parquet {n_train}")
+    return {"sha256": h, "hashes": hashes, "epochs": epochs, "clusters": clusters,
+            "n_train": n_train, "n_test": n_test, "best_epoch": summ.get("best_epoch"),
+            "trained_state": states["best"], "states": states,
+            "run_dir": str(ckpt_p.parent)}
 
 
 class Capture:
@@ -289,17 +370,24 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("eid")
     ap.add_argument("--dry-run", action="store_true", help="audit asserts only; no eval")
+    ap.add_argument("--manifest", default=None,
+                    help="learnability manifest; switches to manifest mode")
+    ap.add_argument("--pretrain-root", default=None,
+                    help="manifest mode: root holding src_<eid>/train/<eid>")
+    ap.add_argument("--out-root", default=None, help="where results are written")
     args = ap.parse_args()
     eid = args.eid.removesuffix("_aligned")
+    ctx = Ctx(args.manifest, args.pretrain_root, args.out_root)
     log = []
 
     def show():
         for ok, name, detail in log:
             print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"   {detail}" if detail else ""))
 
-    print(f"=== own-session learnability: {eid} ===\n--- audit ---")
+    mode = "manifest" if ctx.manifest else "pilot"
+    print(f"=== own-session learnability ({mode} mode): {eid} ===\n--- audit ---")
     try:
-        a = audit(eid, log)
+        a = audit(eid, log, ctx)
     except AuditError as e:
         show(); print(f"\nAUDIT FAILED: {e}"); return 3
     show()
@@ -308,7 +396,7 @@ def main():
     if args.dry_run:
         return 0
 
-    out = OUT_ROOT / eid
+    out = ctx.out_root / eid
     if out.exists() and any(p.name != "capture_meta.json" for p in out.iterdir()):
         print(f"ERROR: {out} already holds results; remove it or choose another root")
         return 2
@@ -316,26 +404,35 @@ def main():
 
     from ndt.utils.eval_utils import load_model_data_local
     from ndt.paths import config_path
-    trained, accelerator, dataset, dataloader = load_model_data_local(
-        model_config=config_path("ndt1_stitching_eval"),
-        model_path=str(paths(eid)[0]), trainer_config=config_path("trainer_ndt1"),
-        seed=42, mask_name="mask_temporal", eid=eid, data_type=DATA_TYPE,
-        base_path=BASE_PATH, data_root=DATA_ROOT)
+    variants, trained_sd = {}, None
+    for role in ctx.roles:
+        model, accelerator, dataset, dataloader = load_model_data_local(
+            model_config=config_path("ndt1_stitching_eval"),
+            model_path=str(paths(eid, role, ctx)[0]), trainer_config=config_path("trainer_ndt1"),
+            seed=42, mask_name="mask_temporal", eid=eid, data_type=DATA_TYPE,
+            base_path=BASE_PATH, data_root=DATA_ROOT)
 
-    # 4 again, on the model the eval will actually use (post accelerator.prepare)
-    ok, n, detail = state_equal(trained.state_dict(), a["trained_state"])
-    log.append((ok, f"4'. eval model == .state_dict.pt after prepare ({n})", detail))
-    ok5 = len(dataset) == a["n_test"]
-    log.append((ok5, "5c. eval dataset is the test split",
-                f"{len(dataset)} vs test.parquet {a['n_test']}"))
-    if not (ok and ok5):
-        show(); return 3
+        # 4 again, on the model the eval will actually use (post accelerator.prepare)
+        ok, n, detail = state_equal(model.state_dict(), a["states"][role])
+        label = "4'. eval model" if not ctx.manifest else f"4'. {role}: eval model"
+        log.append((ok, f"{label} == .state_dict.pt after prepare ({n})", detail))
+        ok5 = len(dataset) == a["n_test"]
+        log.append((ok5, "5c. eval dataset is the test split" + ("" if role == "best" else f" ({role})"),
+                    f"{len(dataset)} vs test.parquet {a['n_test']}"))
+        if not (ok and ok5):
+            show(); return 3
+        v = ctx.variant(role)
+        variants[v] = run_eval(model, accelerator, dataloader, dataset, out / v, log, v)
+        if role == "best":
+            trained_sd = {k: t_.detach().cpu() for k, t_ in model.state_dict().items()}
+        if ctx.untrained_seeds:
+            trained_model = model        # the untrained loop below reuses its accelerator
+        else:
+            del model
+            torch.cuda.empty_cache()
 
-    variants = {"trained": run_eval(trained, accelerator, dataloader, dataset,
-                                    out / "trained", log, "trained")}
-    trained_sd = {k: v.detach().cpu() for k, v in trained.state_dict().items()}
     untrained_sds = {}
-    for s in UNTRAINED_SEEDS:
+    for s in ctx.untrained_seeds:
         m = build_untrained(eid, s, accelerator)
         sd = {k: v.detach().cpu() for k, v in m.state_dict().items()}
         # non-vacuity: same architecture, genuinely different weights
@@ -356,19 +453,36 @@ def main():
         torch.cuda.empty_cache()
 
     n_fail = sum(1 for ok, _, _ in log if not ok)
-    summary = {"eid": eid, "cohort": pf.SOURCES[eid][0], "clusters": a["clusters"],
+    cohort = pf.SOURCES[eid][0] if not ctx.manifest else ctx.manifest[eid]["cohort"]
+    summary = {"eid": eid, "cohort": cohort, "clusters": a["clusters"],
                "n_train": a["n_train"], "n_test": a["n_test"],
                "source_checkpoint_sha256": a["sha256"], "source_checkpoint_role": "best",
                "source_best_epoch": a["best_epoch"], "band_rule": BAND_RULE,
-               "untrained_seeds": list(UNTRAINED_SEEDS), "variants": variants,
+               "untrained_seeds": list(ctx.untrained_seeds), "variants": variants,
                "checks": [{"ok": ok, "name": n, "detail": d} for ok, n, d in log],
                "n_checks_failed": n_fail}
+    if ctx.manifest:
+        entry = ctx.manifest[eid]
+        run_summary = json.loads((Path(a["run_dir"]) / "run_summary.json").read_text())
+        summary.update({
+            "mode": "manifest", "manifest": ctx.manifest_path,
+            "cell": entry["cell"], "n_val": entry["n_val"],
+            "checkpoints": {r: {"sha256": a["hashes"][r], "epoch": a["epochs"][r]}
+                            for r in ctx.roles},
+            "pretrain_run_dir": a["run_dir"],
+            "reused_pilot_pretrain": bool(entry.get("reuse_pilot_pretrain")),
+            "covariates": session_covariates(eid, DATA_ROOT),
+            "curve": curve_features(Path(a["run_dir"]) / "loss" / "loss_history.npz", run_summary),
+        })
     (out / "own_session_summary.json").write_text(json.dumps(summary, indent=2))
 
     print("\n--- all checks ---"); show()
-    t = variants["trained"]["co_smooth"]
-    print(f"\n{eid[:8]} own-session co_smooth: mean {t['mean_bps']:+.4f} "
-          f"CI [{t['ci95_lo']:+.4f}, {t['ci95_hi']:+.4f}] -> band {t['band']}")
+    for v, r in variants.items():
+        if v.startswith("untrained"):
+            continue
+        c = r["co_smooth"]
+        print(f"\n{eid[:8]} [{v}] own-session co_smooth: mean {c['mean_bps']:+.4f} "
+              f"CI [{c['ci95_lo']:+.4f}, {c['ci95_hi']:+.4f}] -> band {c['band']}")
     print(f"checks: {len(log) - n_fail}/{len(log)} passed; wrote {out/'own_session_summary.json'}")
     return 1 if n_fail else 0
 

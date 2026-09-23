@@ -1,0 +1,655 @@
+{
+  "purpose": "single-session learnability characterisation (descriptive; held-in only)",
+  "primary_population": "the 'sessions' list only (36 bwm + measurable rs)",
+  "rule": {
+    "bwm": "3x3 tertile grid on n_train x clusters over all 303 bwm held-in; 4/cell via numpy.random.default_rng(42); candidates sorted by eid; cells visited trials-outer, clusters-inner; value == edge -> higher tertile",
+    "rs": "all measurable held-in rs: val>=30 and test>=30"
+  },
+  "seed": 42,
+  "source_manifests_sha256": {
+    "bwm/heldin": "52de6f810d9b3845df20de130e4ab83c87311436b7851438138ad8d058875921",
+    "bwm/heldout": "0cf722f6dcb95d1e8c25a6ec9fddb08a616fa1b407aff44151cfa29320d2a03e",
+    "rs/heldin": "134e146491238d663a80357561088adff9a25faed95edde73f0356f9cc983405",
+    "rs/heldout": "b78c271ac3b7ef5b125f89efc942319ed5f0e9fa873f4a3f8ae42d930589439a"
+  },
+  "bwm_tertile_edges": {
+    "n_train": [
+      366.66666666666663,
+      493.0
+    ],
+    "clusters": [
+      961.3333333333331,
+      1530.0
+    ]
+  },
+  "bwm_cell_sizes": {
+    "trials_low/clusters_low": 38,
+    "trials_low/clusters_mid": 33,
+    "trials_low/clusters_high": 30,
+    "trials_mid/clusters_low": 35,
+    "trials_mid/clusters_mid": 32,
+    "trials_mid/clusters_high": 33,
+    "trials_high/clusters_low": 28,
+    "trials_high/clusters_mid": 36,
+    "trials_high/clusters_high": 38
+  },
+  "rs_excluded": [
+    {
+      "eid": "38d95489-2e82-412a-8c1a-c5377b5f1555",
+      "clusters": 138,
+      "n_train": 11,
+      "n_val": 2,
+      "n_test": 4,
+      "reason": "measurability: needs val>=30 and test>=30"
+    },
+    {
+      "eid": "57fd2325-67f4-4d45-9907-29e77d3043d7",
+      "clusters": 318,
+      "n_train": 118,
+      "n_val": 18,
+      "n_test": 34,
+      "reason": "measurability: needs val>=30 and test>=30"
+    }
+  ],
+  "n_sessions": 52,
+  "n_bwm": 36,
+  "n_rs": 16,
+  "n_reused": 3,
+  "est_total_pretrain_gpu_h": 91.7,
+  "sessions": [
+    {
+      "eid": "233617ec-c5cf-4eda-afc8-3b1d94f36d73",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_low",
+      "clusters": 515,
+      "n_train": 307,
+      "n_val": 44,
+      "n_test": 88,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.061
+    },
+    {
+      "eid": "6cbeead9-bb7a-40e1-8ccd-47ae60239654",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_low",
+      "clusters": 528,
+      "n_train": 349,
+      "n_val": 50,
+      "n_test": 100,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.225
+    },
+    {
+      "eid": "a2b9fbbe-79fc-4166-a16e-b307813a2f06",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_low",
+      "clusters": 566,
+      "n_train": 326,
+      "n_val": 47,
+      "n_test": 94,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.196
+    },
+    {
+      "eid": "bd07e3a7-09c3-4b67-996b-42b6d5cedf1c",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_low",
+      "clusters": 667,
+      "n_train": 331,
+      "n_val": 47,
+      "n_test": 95,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.355
+    },
+    {
+      "eid": "28741f91-c837-4147-939e-918d38d849f2",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_mid",
+      "clusters": 1401,
+      "n_train": 273,
+      "n_val": 39,
+      "n_test": 78,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.314
+    },
+    {
+      "eid": "4364a246-f8d7-4ce7-ba23-a098104b96e4",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_mid",
+      "clusters": 1202,
+      "n_train": 352,
+      "n_val": 50,
+      "n_test": 101,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.667
+    },
+    {
+      "eid": "9dd72e52-5393-4c08-9eca-f7dace2e59f6",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_mid",
+      "clusters": 1038,
+      "n_train": 280,
+      "n_val": 40,
+      "n_test": 81,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.28
+    },
+    {
+      "eid": "b182b754-3c3e-4942-8144-6ee790926b58",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_mid",
+      "clusters": 1255,
+      "n_train": 303,
+      "n_val": 43,
+      "n_test": 87,
+      "reuse_pilot_pretrain": "/work/nvme/beml/ac136/IBL_MTM/results/pilot/pretrain/src_b182b754-3c3e-4942-8144-6ee790926b58/train/b182b754-3c3e-4942-8144-6ee790926b58",
+      "est_pretrain_gpu_h": 0.0
+    },
+    {
+      "eid": "25d1920e-a2af-4b6c-9f2e-fc6c65576544",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_high",
+      "clusters": 1583,
+      "n_train": 280,
+      "n_val": 40,
+      "n_test": 81,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.356
+    },
+    {
+      "eid": "768a371d-7e88-47f8-bf21-4a6a6570dd6e",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_high",
+      "clusters": 2612,
+      "n_train": 281,
+      "n_val": 40,
+      "n_test": 81,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.375
+    },
+    {
+      "eid": "8c552ddc-813e-4035-81cc-3971b57efe65",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_high",
+      "clusters": 1775,
+      "n_train": 319,
+      "n_val": 45,
+      "n_test": 92,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.554
+    },
+    {
+      "eid": "a2ec6341-c55f-48a0-a23b-0ef2f5b1d71e",
+      "cohort": "bwm",
+      "cell": "trials_low/clusters_high",
+      "clusters": 2445,
+      "n_train": 287,
+      "n_val": 41,
+      "n_test": 82,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.404
+    },
+    {
+      "eid": "2038e95d-64d4-4ecb-83d0-1308d3c598f8",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_low",
+      "clusters": 827,
+      "n_train": 373,
+      "n_val": 54,
+      "n_test": 107,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.656
+    },
+    {
+      "eid": "5455a21c-1be7-4cae-ae8e-8853a8d5f55e",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_low",
+      "clusters": 798,
+      "n_train": 441,
+      "n_val": 62,
+      "n_test": 127,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.95
+    },
+    {
+      "eid": "b9c205c3-feac-485b-a89d-afc96d9cb280",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_low",
+      "clusters": 790,
+      "n_train": 459,
+      "n_val": 66,
+      "n_test": 132,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.027
+    },
+    {
+      "eid": "ef38e503-dd79-4185-bf87-4712d4f274fe",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_low",
+      "clusters": 667,
+      "n_train": 401,
+      "n_val": 57,
+      "n_test": 115,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.641
+    },
+    {
+      "eid": "4aa1d525-5c7d-4c50-a147-ec53a9014812",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_mid",
+      "clusters": 1044,
+      "n_train": 394,
+      "n_val": 57,
+      "n_test": 113,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.803
+    },
+    {
+      "eid": "821f1883-27f3-411d-afd3-fb8241bbc39a",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_mid",
+      "clusters": 1040,
+      "n_train": 413,
+      "n_val": 59,
+      "n_test": 119,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.889
+    },
+    {
+      "eid": "8d316998-28c3-4265-b029-e2ca82375b2f",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_mid",
+      "clusters": 1012,
+      "n_train": 427,
+      "n_val": 60,
+      "n_test": 123,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.945
+    },
+    {
+      "eid": "fa1f26a1-eb49-4b24-917e-19f02a18ac61",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_mid",
+      "clusters": 1357,
+      "n_train": 423,
+      "n_val": 60,
+      "n_test": 122,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.034
+    },
+    {
+      "eid": "07dc4b76-5b93-4a03-82a0-b3d9cc73f412",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_high",
+      "clusters": 1821,
+      "n_train": 484,
+      "n_val": 69,
+      "n_test": 139,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.362
+    },
+    {
+      "eid": "360eac0c-7d2d-4cc1-9dcf-79fc7afc56e7",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_high",
+      "clusters": 1708,
+      "n_train": 420,
+      "n_val": 60,
+      "n_test": 121,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.042
+    },
+    {
+      "eid": "b52182e7-39f6-4914-9717-136db589706e",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_high",
+      "clusters": 1615,
+      "n_train": 461,
+      "n_val": 66,
+      "n_test": 132,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.235
+    },
+    {
+      "eid": "fb70ebf7-8175-42b0-9b7a-7c6e8612226e",
+      "cohort": "bwm",
+      "cell": "trials_mid/clusters_high",
+      "clusters": 1619,
+      "n_train": 449,
+      "n_val": 64,
+      "n_test": 129,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.177
+    },
+    {
+      "eid": "0b7ee1b6-42db-46cd-a465-08f531366187",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_low",
+      "clusters": 514,
+      "n_train": 557,
+      "n_val": 80,
+      "n_test": 160,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.922
+    },
+    {
+      "eid": "58b1e920-cfc8-467e-b28b-7654a55d0977",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_low",
+      "clusters": 549,
+      "n_train": 507,
+      "n_val": 73,
+      "n_test": 145,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.824
+    },
+    {
+      "eid": "9e9c6fc0-4769-4d83-9ea4-b59a1230510e",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_low",
+      "clusters": 644,
+      "n_train": 703,
+      "n_val": 100,
+      "n_test": 202,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.81
+    },
+    {
+      "eid": "f5591ac5-311d-4fa8-9bad-029d7be9c491",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_low",
+      "clusters": 448,
+      "n_train": 548,
+      "n_val": 78,
+      "n_test": 157,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.739
+    },
+    {
+      "eid": "25f77e81-c1af-46ab-8686-73ac3d67c4a7",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_mid",
+      "clusters": 1213,
+      "n_train": 709,
+      "n_val": 102,
+      "n_test": 203,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 3.365
+    },
+    {
+      "eid": "510b1a50-825d-44ce-86f6-9678f5396e02",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_mid",
+      "clusters": 1068,
+      "n_train": 735,
+      "n_val": 104,
+      "n_test": 211,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 3.374
+    },
+    {
+      "eid": "b10ed1ba-2099-42c4-bee3-d053eb594f09",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_mid",
+      "clusters": 1389,
+      "n_train": 625,
+      "n_val": 90,
+      "n_test": 179,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 3.008
+    },
+    {
+      "eid": "edd22318-216c-44ff-bc24-49ce8be78374",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_mid",
+      "clusters": 1513,
+      "n_train": 622,
+      "n_val": 89,
+      "n_test": 178,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 3.005
+    },
+    {
+      "eid": "3663d82b-f197-4e8b-b299-7b803a155b84",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_high",
+      "clusters": 1802,
+      "n_train": 623,
+      "n_val": 88,
+      "n_test": 179,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 3.038
+    },
+    {
+      "eid": "8c33abef-3d3e-4d42-9f27-445e9def08f9",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_high",
+      "clusters": 2002,
+      "n_train": 502,
+      "n_val": 72,
+      "n_test": 144,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.456
+    },
+    {
+      "eid": "a7763417-e0d6-4f2a-aa55-e382fd9b5fb8",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_high",
+      "clusters": 2520,
+      "n_train": 679,
+      "n_val": 96,
+      "n_test": 195,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 3.321
+    },
+    {
+      "eid": "c557324b-b95d-414c-888f-6ee1329a2329",
+      "cohort": "bwm",
+      "cell": "trials_high/clusters_high",
+      "clusters": 2091,
+      "n_train": 734,
+      "n_val": 105,
+      "n_test": 210,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 3.59
+    },
+    {
+      "eid": "41872d7f-75cb-4445-bb1a-132b354c44f0",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 308,
+      "n_train": 354,
+      "n_val": 51,
+      "n_test": 102,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 0.915
+    },
+    {
+      "eid": "572a95d1-39ca-42e1-8424-5c9ffcb2df87",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 602,
+      "n_train": 233,
+      "n_val": 33,
+      "n_test": 67,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 0.89
+    },
+    {
+      "eid": "5dcee0eb-b34d-4652-acc3-d10afc6eae68",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 274,
+      "n_train": 579,
+      "n_val": 83,
+      "n_test": 166,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.414
+    },
+    {
+      "eid": "61e11a11-ab65-48fb-ae08-3cb80662e5d6",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 494,
+      "n_train": 621,
+      "n_val": 89,
+      "n_test": 178,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.091
+    },
+    {
+      "eid": "71e55bfe-5a3a-4cba-bdc7-f085140d798e",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 1069,
+      "n_train": 800,
+      "n_val": 114,
+      "n_test": 229,
+      "reuse_pilot_pretrain": "/work/nvme/beml/ac136/IBL_MTM/results/pilot/pretrain/src_71e55bfe-5a3a-4cba-bdc7-f085140d798e/train/71e55bfe-5a3a-4cba-bdc7-f085140d798e",
+      "est_pretrain_gpu_h": 0.0
+    },
+    {
+      "eid": "754b74d5-7a06-4004-ae0c-72a10b6ed2e6",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 951,
+      "n_train": 712,
+      "n_val": 102,
+      "n_test": 204,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 3.217
+    },
+    {
+      "eid": "7691eeb3-715b-4571-8fda-6bb57aab8253",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 417,
+      "n_train": 345,
+      "n_val": 50,
+      "n_test": 99,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.05
+    },
+    {
+      "eid": "862ade13-53cd-4221-a3fa-dda8643641f2",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 258,
+      "n_train": 378,
+      "n_val": 54,
+      "n_test": 109,
+      "reuse_pilot_pretrain": "/work/nvme/beml/ac136/IBL_MTM/results/pilot/pretrain/src_862ade13-53cd-4221-a3fa-dda8643641f2/train/862ade13-53cd-4221-a3fa-dda8643641f2",
+      "est_pretrain_gpu_h": 0.0
+    },
+    {
+      "eid": "b196a2ad-511b-4e90-ac99-b5a29ad25c22",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 420,
+      "n_train": 371,
+      "n_val": 52,
+      "n_test": 107,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.134
+    },
+    {
+      "eid": "c51f34d8-42f6-4c9c-bb5b-669fd9c42cd9",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 693,
+      "n_train": 328,
+      "n_val": 47,
+      "n_test": 94,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.378
+    },
+    {
+      "eid": "c7248e09-8c0d-40f2-9eb4-700a8973d8c8",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 902,
+      "n_train": 545,
+      "n_val": 78,
+      "n_test": 156,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 2.446
+    },
+    {
+      "eid": "c7bf2d49-4937-4597-b307-9f39cb1c7b16",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 370,
+      "n_train": 410,
+      "n_val": 58,
+      "n_test": 118,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.167
+    },
+    {
+      "eid": "d04feec7-d0b7-4f35-af89-0232dd975bf0",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 452,
+      "n_train": 274,
+      "n_val": 39,
+      "n_test": 79,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 0.874
+    },
+    {
+      "eid": "d9f0c293-df4c-410a-846d-842e47c6b502",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 556,
+      "n_train": 278,
+      "n_val": 40,
+      "n_test": 80,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.008
+    },
+    {
+      "eid": "f115196e-8dfe-4d2a-8af3-8206d93c1729",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 439,
+      "n_train": 450,
+      "n_val": 65,
+      "n_test": 129,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 1.411
+    },
+    {
+      "eid": "f140a2ec-fd49-4814-994a-fe3476f14e66",
+      "cohort": "rs",
+      "cell": "census",
+      "clusters": 308,
+      "n_train": 271,
+      "n_val": 39,
+      "n_test": 78,
+      "reuse_pilot_pretrain": null,
+      "est_pretrain_gpu_h": 0.701
+    }
+  ],
+  "pilot_reference": [
+    {
+      "eid": "5b49aca6-a6f4-4075-931a-617ad64c219c",
+      "cohort": "bwm",
+      "clusters": 736,
+      "n_train": 539,
+      "n_val": 77,
+      "n_test": 155,
+      "pilot_pretrain": "/work/nvme/beml/ac136/IBL_MTM/results/pilot/pretrain/src_5b49aca6-a6f4-4075-931a-617ad64c219c/train/5b49aca6-a6f4-4075-931a-617ad64c219c",
+      "role": "pilot reference only; excluded from every statistic"
+    },
+    {
+      "eid": "f56194bc-8215-4ae8-bc6a-89781ad8e050",
+      "cohort": "bwm",
+      "clusters": 1899,
+      "n_train": 486,
+      "n_val": 70,
+      "n_test": 139,
+      "pilot_pretrain": "/work/nvme/beml/ac136/IBL_MTM/results/pilot/pretrain/src_f56194bc-8215-4ae8-bc6a-89781ad8e050/train/f56194bc-8215-4ae8-bc6a-89781ad8e050",
+      "role": "pilot reference only; excluded from every statistic"
+    }
+  ]
+}

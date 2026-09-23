@@ -47,7 +47,10 @@ REPO_ROOT="$(find_repo_root)" || { echo "cannot locate the repo root" >&2; exit 
 cd "$REPO_ROOT" || exit 2
 source script/parity_common.sh
 
-OUT_ROOT="${RESULTS_ROOT}/pilot/pretrain"
+# Output subdirectory under RESULTS_ROOT. Defaults to the pilot location so every
+# existing invocation is unchanged; the learnability campaign sets
+# PRETRAIN_SUBDIR=learnability/pretrain.
+OUT_ROOT="${RESULTS_ROOT}/${PRETRAIN_SUBDIR:-pilot/pretrain}"
 LOG_DIR="${OUT_ROOT}/src_${EID}/train/${EID}"
 
 echo "=================================================="

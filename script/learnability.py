@@ -128,3 +128,57 @@ def variation_ratios(pred, gt):
     vt = p.mean(0).var() / vt_y if vt_y > 0 else np.nan
     vr = p.mean(1).var() / vr_y if vr_y > 0 else np.nan
     return float(vt), float(vr)
+
+
+def session_covariates(eid, data_root):
+    """Data-only properties of a session's TRAIN split, for learnability analysis.
+
+    Computed straight from the sparse parquet columns -- no dense reconstruction --
+    over every train trial. The same quantities as the 5b49aca6 check, which used
+    a 60-trial sample. Explicit zeros in the sparse data, if any, are not counted
+    as non-zero bins.
+    """
+    from pathlib import Path
+    import pyarrow.parquet as pq
+    d = Path(data_root) / eid / "data"
+    t = pq.read_table(d / "train.parquet",
+                      columns=["spikes_sparse_data", "spikes_sparse_indices",
+                               "spikes_sparse_shape"])
+    shp = t["spikes_sparse_shape"][0].as_py()
+    n_bins, n_neurons = int(shp[0]), int(shp[1])
+    data = t["spikes_sparse_data"].to_pylist()
+    idx = t["spikes_sparse_indices"].to_pylist()
+    tot = np.zeros(n_neurons)
+    nonzero = 0
+    for dat, ix in zip(data, idx):
+        dat = np.asarray(dat, dtype=np.float64)
+        tot += np.bincount(np.asarray(ix, dtype=np.int64), weights=dat, minlength=n_neurons)
+        nonzero += int((dat > 0).sum())
+    n_trials = len(data)
+    rate = tot / (n_trials * n_bins)
+    return {
+        "n_bins": n_bins,
+        "mean_rate_per_bin": float(rate.mean()),
+        "frac_zero_bins": float(1 - nonzero / (n_trials * n_bins * n_neurons)),
+        "silent_neurons": int((rate == 0).sum()),
+        "rate_cv_across_neurons": float(rate.std() / rate.mean()) if rate.mean() > 0 else float("nan"),
+    }
+
+
+def curve_features(loss_history_path, run_summary):
+    """Pretraining-curve features, from artifacts every run already writes."""
+    lh = np.load(loss_history_path)
+    tl = np.asarray(lh["train_loss"], dtype=np.float64)
+    n = len(tl)
+    k = min(50, n - 1)
+    drop = tl[0] - tl[-1]
+    tail = tl[-min(50, n):]
+    return {
+        "epochs_recorded": int(n),
+        "loss_first": float(tl[0]), "loss_final": float(tl[-1]),
+        "loss_drop_frac": float(drop / tl[0]) if tl[0] else float("nan"),
+        "frac_of_drop_by_epoch_50": float((tl[0] - tl[k]) / drop) if drop else float("nan"),
+        "final_50_loss_slope": float(np.polyfit(np.arange(len(tail)), tail, 1)[0]),
+        "best_epoch": run_summary.get("best_epoch"),
+        "best_metric": run_summary.get("best_metric"),
+    }
