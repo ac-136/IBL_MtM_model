@@ -159,6 +159,17 @@ def run(args):
     if loaded_order != requested:
         raise RuntimeError(f"loaded sessions {loaded_order} != requested {requested}")
 
+    # M2: stitcher/decoder construction order = vocabulary order. NeuralStitcher
+    # and StitchDecoder register one module per entry of num_neurons, in list
+    # order, so this fixes which RNG draws each session's projections receive --
+    # the precondition for M3's remap gate. (Upstream used set order.) Unique
+    # counts only: until M3, same-count sessions still share one module (1b).
+    ordered_counts = []
+    for _, n in meta_data["session_num_neurons"]:
+        if n not in ordered_counts:
+            ordered_counts.append(n)
+    meta_data["num_neurons"] = ordered_counts
+
     num_sessions = len(meta_data["eids"])
     run_name = (args.output_model_name if getattr(args, "output_model_name", None)
                 else "num_session_{}".format(num_sessions))
@@ -195,7 +206,8 @@ def run(args):
                              sort_by_depth=config.data.sort_by_depth,
                              sort_by_region=config.data.sort_by_region,
                              stitching=config.encoder.stitching,
-                             shuffle=True)
+                             shuffle=True,
+                             seed=config.seed)
 
     val_dataloader = make_loader(val_dataset,
                              target=None,
@@ -209,7 +221,8 @@ def run(args):
                              sort_by_depth=config.data.sort_by_depth,
                              sort_by_region=config.data.sort_by_region,
                              stitching=config.encoder.stitching,
-                             shuffle=False)
+                             shuffle=False,
+                             seed=config.seed)
 
     # Initialize the accelerator
     accelerator = Accelerator()
@@ -226,6 +239,13 @@ def run(args):
     session_vocab, vocabulary_ordering_rule = vocab_for_sessions(
         meta_data["eids"], ordered_eids=config.data.train_session_eid)
     print(f"session vocab ({vocabulary_ordering_rule}): {len(session_vocab)} entries")
+    # M2: the sampler orders sessions by first appearance in the concatenated
+    # dataset; that must be the vocabulary order, or per-session bookkeeping and
+    # embedding rows would disagree about which session is which.
+    for name, dl in (("train", train_dataloader), ("val", val_dataloader)):
+        order = getattr(dl.batch_sampler, "session_order", None)
+        if order is not None and order != list(session_vocab):
+            raise RuntimeError(f"{name} sampler session order {order} != vocab {session_vocab}")
     model = model_class(config.model, **config.method.model_kwargs, **meta_data,
                         session_vocab=session_vocab)
     model = accelerator.prepare(model)

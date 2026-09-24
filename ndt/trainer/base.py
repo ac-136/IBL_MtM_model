@@ -53,6 +53,9 @@ class Trainer():
         # and discarded, so the number to plot against scale survived only in
         # the Slurm logs. Nothing here changes model selection or scheduling.
         self.eval_metrics = []
+        # M2: the selection metric per session, {eid: [value per epoch]}. NaN on an
+        # epoch where a session produced no validation batches.
+        self.eval_metrics_per_session = {}
         self.learning_rates = []
         self.best_epoch = None
         self.best_metric = None
@@ -265,6 +268,13 @@ class Trainer():
         }
     
     def _forward_model_outputs(self, batch, masking_mode):
+        # M2: the model embeds and stitches the whole batch as batch['eid'][0], so a
+        # batch mixing sessions would silently route samples through the wrong
+        # session. SessionBatchSampler guarantees homogeneity; this makes it a hard
+        # invariant. Comparison only -- no RNG.
+        _e0 = batch['eid'][0]
+        if any(e != _e0 for e in batch['eid']):
+            raise RuntimeError(f"mixed-session batch: {sorted(set(batch['eid']))[:4]}")
         batch = move_batch_to_device(batch, self.accelerator.device)
         return self.model(
             batch['spikes_data'], 
@@ -284,12 +294,11 @@ class Trainer():
         self.model.eval()
         eval_loss = 0.
         eval_examples = 0
-        session_results = {}
-        for num_neuron in self.num_neurons:
-            session_results[num_neuron] = {
-                "gt": [],
-                "preds": []
-            }
+        # M2: buckets keyed by EID, not by neuron count, so same-count sessions are
+        # never merged. Ordered by the model's vocabulary. With one session there is
+        # one bucket either way, so single-session numerics are unchanged.
+        bucket_order = [str(e) for e in (self.session_vocab() or [])]
+        session_results = {e: {"gt": [], "preds": []} for e in bucket_order}
         if self.eval_dataloader:
             gt, preds = [], []
             with torch.no_grad():  
@@ -300,23 +309,29 @@ class Trainer():
                     eval_loss += loss.item()
                     eval_examples += outputs.n_examples
                     num_neuron = batch['spikes_data'].shape[2]
+                    key = str(batch['eid'][0]).removesuffix("_aligned")
+                    if key not in session_results:
+                        session_results[key] = {"gt": [], "preds": []}
+                        bucket_order.append(key)
                     if self.config.method.model_kwargs.method_name == 'ssl':
-                        session_results[num_neuron]["gt"].append(outputs.targets.clone()[:,:,:num_neuron])
-                        session_results[num_neuron]["preds"].append(outputs.preds.clone()[:,:,:num_neuron])
+                        session_results[key]["gt"].append(outputs.targets.clone()[:,:,:num_neuron])
+                        session_results[key]["preds"].append(outputs.preds.clone()[:,:,:num_neuron])
                     else:
-                        session_results[num_neuron]["gt"].append(outputs.targets.clone())
-                        session_results[num_neuron]["preds"].append(outputs.preds.clone())
+                        session_results[key]["gt"].append(outputs.targets.clone())
+                        session_results[key]["preds"].append(outputs.preds.clone())
                     
             results_list = []
-            for idx, num_neuron in enumerate(self.num_neurons):
-                if len(session_results[num_neuron]["gt"]) == 0:
+            per_session = {}
+            for idx, key in enumerate(bucket_order):
+                if len(session_results[key]["gt"]) == 0:
                     print(
-                        f"Skipping eval metrics for num_neuron={num_neuron} "
+                        f"Skipping eval metrics for session {key} "
                         "because no validation batches were collected for this bucket."
                     )
+                    per_session[key] = float("nan")
                     continue
-                _gt = torch.cat(session_results[num_neuron]["gt"], dim=0)
-                _preds = torch.cat(session_results[num_neuron]["preds"], dim=0)
+                _gt = torch.cat(session_results[key]["gt"], dim=0)
+                _preds = torch.cat(session_results[key]["preds"], dim=0)
 
                 if self.config.method.model_kwargs.loss == "poisson_nll":
                     _preds = torch.exp(_preds)
@@ -326,7 +341,7 @@ class Trainer():
                 preds.append(_preds)
                 result_idx = len(gt) - 1
 
-                if len(self.session_active_neurons) < len(self.num_neurons):
+                if len(self.session_active_neurons) < len(bucket_order):
                     active_neurons = np.argsort(gt[result_idx].cpu().numpy().sum((0,1)))[::-1][:50].tolist()
                     self.session_active_neurons.append(active_neurons)
                 if self.config.method.model_kwargs.method_name == 'ssl':
@@ -347,6 +362,10 @@ class Trainer():
                                             metrics=[self.metric],
                                             device=self.accelerator.device)
                 results_list.append(results[self.metric])
+                _v = results[self.metric]
+                per_session[key] = float(_v.item() if isinstance(_v, torch.Tensor) else _v)
+            for key, v in per_session.items():
+                self.eval_metrics_per_session.setdefault(key, []).append(v)
 
         return {
             "eval_loss": eval_loss/eval_examples,
@@ -412,6 +431,7 @@ class Trainer():
             "train_loss": self.train_losses,
             "eval_loss": self.eval_losses,
             "eval_metric": self.eval_metrics,
+            "eval_metric_per_session": self.eval_metrics_per_session,
             "lr": self.learning_rates,
             "num_trainable_params": n_trainable,
             "num_total_params": n_total,

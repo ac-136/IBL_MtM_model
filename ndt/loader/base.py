@@ -248,6 +248,64 @@ class LengthStitchGroupedSampler(Sampler):
 
 
 
+class SessionBatchSampler:
+    r"""Batch sampler whose every batch comes from exactly one session (M2).
+
+    Replaces upstream MtM's trimming of each session to a multiple of the batch
+    size: nothing is discarded, and each session contributes one short final
+    batch per epoch instead. Used only when a dataset holds more than one EID;
+    single-session loading keeps LengthStitchGroupedSampler unchanged.
+
+    Per epoch, with shuffle=True:
+      1. for each EID, in first-appearance order, permute that session's row
+         indices with the epoch's generator;
+      2. chunk them into full batches of ``batch_size`` plus one short final batch;
+      3. shuffle the list of session-homogeneous batches with the same generator.
+    With shuffle=False neither step happens: dataset order within each session,
+    sessions in first-appearance order, identical every epoch.
+
+    The epoch's generator is ``np.random.default_rng([seed, epoch])``, private to
+    this sampler, with ``epoch`` advanced once per ``__iter__``. No global NumPy or
+    torch RNG is read or advanced, so batching cannot perturb any other random
+    stream, and a fresh sampler with the same seed reproduces the whole
+    epoch-by-epoch sequence. The trainer iterates the train loader exactly once
+    per epoch, so the counter tracks training epochs.
+    """
+
+    def __init__(self, eids, batch_size: int, shuffle: bool, seed: int):
+        if seed is None:
+            raise ValueError("SessionBatchSampler needs an explicit seed")
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self._epoch = 0
+        groups = {}
+        for i, e in enumerate(eids):
+            groups.setdefault(str(e), []).append(i)
+        # dicts keep insertion order: sessions in first-appearance order
+        self.session_order = list(groups)
+        self._groups = [np.asarray(groups[e], dtype=np.int64) for e in self.session_order]
+
+    def __len__(self):
+        return int(sum(-(-len(g) // self.batch_size) for g in self._groups))
+
+    def __iter__(self):
+        rng = np.random.default_rng([self.seed, self._epoch])
+        self._epoch += 1
+        batches = []
+        for idx in self._groups:
+            if self.shuffle:
+                idx = rng.permutation(idx)
+            for s in range(0, len(idx), self.batch_size):
+                batches.append([int(i) for i in idx[s:s + self.batch_size]])
+        if self.shuffle:
+            order = rng.permutation(len(batches))
+            batches = [batches[k] for k in order]
+        return iter(batches)
+
+
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(
         self,
