@@ -8,6 +8,16 @@ from ..vocab import vocab_metadata
 from tqdm import tqdm
 
 
+# M1: run-level provenance recorded into run_summary.json when passed as kwargs.
+# An explicit allowlist rather than a prefix, so no caller can overwrite a field
+# the trainer writes itself (session_vocab, eids, ...) by passing a similar name.
+RUN_PROVENANCE_KEYS = (
+    "session_num_neurons",    # ordered [eid, num_neurons] in load order (meta_data)
+    "session_list_source",    # "cli" or the manifest path the session list came from
+    "session_list_sha256",    # sha256 of that manifest file, when there is one
+)
+
+
 def _to_plain(obj):
     """Recursively reduce a config to YAML-safe primitives.
 
@@ -78,7 +88,7 @@ class Trainer():
         # change here -- the alternative is a named attribute per field, which is
         # how provenance quietly stops being recorded.
         self.extra_provenance = {k: v for k, v in kwargs.items()
-                                 if k.startswith("source_")}
+                                 if k.startswith("source_") or k in RUN_PROVENANCE_KEYS}
         
         if self.config.method.model_kwargs.clf:
             self.metric = 'acc'

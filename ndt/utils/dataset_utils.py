@@ -117,6 +117,13 @@ def load_ibl_dataset_locally(
     else:
         if len(train_session_eid) > 0:
             train_session_eid_dir = list(train_session_eid)
+            # M1: an explicit list longer than num_sessions used to be truncated
+            # silently by the [:num_sessions] slice below, so a caller asking for N
+            # sessions could train on fewer with nothing said. Refuse instead.
+            if len(train_session_eid_dir) > num_sessions:
+                raise ValueError(
+                    f"{len(train_session_eid_dir)} sessions requested but num_sessions="
+                    f"{num_sessions}; refusing to truncate the session list silently.")
         else:
             train_session_eid_dir = user_datasets
 
@@ -129,6 +136,10 @@ def load_ibl_dataset_locally(
 
     num_neuron_set = set()
     eids_set = set()
+    # M1: ordered (eid, num_neurons) in load order. num_neurons stays a set-derived
+    # list exactly as before, so single-session model construction is untouched;
+    # this is the per-session mapping multi-session code needs and that a set loses.
+    session_num_neurons = []
     # The `use_re` filter was removed with the eid-list helpers: it is False on
     # every code path here, so target_eids/test_re_eids were read and discarded.
 
@@ -160,14 +171,18 @@ def load_ibl_dataset_locally(
             # print(binned_spikes_data.shape)
 
             num_neuron_set.add(binned_spikes_data.shape[2])
+            session_num_neurons.append([dataset_eid.removesuffix("_aligned"),
+                                        int(binned_spikes_data.shape[2])])
 
             # The bare eid is the session's canonical identity: it is what the
             # parquet `eid` column holds and what the session embedding keys on.
             eids_set.add(dataset_eid.removesuffix("_aligned"))
         except Exception as e:
-            print("Error loading dataset: ", dataset_eid)
-            print(e)
-            continue
+            # M1: fail loudly. The previous `continue` let a scale-N run train on
+            # N-1 sessions with nothing but a print, and could leave a session's
+            # train/val splits appended when a later step for it failed.
+            raise RuntimeError(f"failed to load requested session {dataset_eid}: "
+                               f"{type(e).__name__}: {e}") from e
     print("session eid used: ", eids_set)
     print("Total number of session: ", len(eids_set))
     if len(session_train_datasets) == 0:
@@ -186,6 +201,7 @@ def load_ibl_dataset_locally(
         "num_neurons": num_neuron_set,
         "num_sessions": len(eids_set),
         "eids": eids_set,
+        "session_num_neurons": session_num_neurons,
     }
     return train_dataset, val_dataset, test_dataset, meta_data
 
