@@ -13,6 +13,14 @@ Population rule, enforced in code rather than by layout:
     natural frequency among all 303 held-in bwm sessions. rs is all measurable
     held-in rs. A pooled analysis follows, labelled EXPLORATORY.
 Descriptive only: no threshold is derived from anything printed here.
+
+The band rule is unchanged (learnability.BAND_RULE). Next to every band the
+report prints the CI WIDTH (hi - lo), because '~0' means only "the 95% CI
+contains 0". A narrow CI around 0 is close to the mean-rate null; a wide one is
+"too uncertain to tell". The learnability canary f140a2ec [best] was '~0' with a
+CI of [-642.8, +0.02], its neuron-mean dragged down by near-silent neurons.
+No threshold is applied to the width. It is printed so a '~0' cannot be read as
+"mean-like" without it.
 """
 
 import json
@@ -43,6 +51,16 @@ OUTCOMES = [("bps", lambda s: s["variants"]["best"]["co_smooth"]["mean_bps"]),
 
 def co(s, role="best"):
     return s["variants"][role]["co_smooth"]
+
+
+def ci_width(b):
+    return b["ci95_hi"] - b["ci95_lo"]
+
+
+LEGEND = ("Band = own-session co-smoothing bps vs the mean-rate null, from the fixed rule "
+          "(learnability.BAND_RULE).\n'~0' = the 95% CI contains 0: NOT distinguishable from "
+          "the null. It does NOT mean 'mean-like'; read it\nwith ci_w (CI width, hi-lo) and "
+          "t_var. No threshold is applied to ci_w; it is descriptive.")
 
 
 def band_counts(rows, role):
@@ -76,6 +94,11 @@ def cohort_block(rows, cohort, n_expected, phrase):
         c = band_counts(rows, role)
         print(f"  [{role}] co-smoothing band: " + ", ".join(
             f"{c[b]}/{n_expected} {b}" for b in BANDS) + f"  ({phrase})")
+        near = sorted((ci_width(co(s, role)), s["eid"][:8], co(s, role)["mean_bps"])
+                      for s in rows if co(s, role)["band"] == "~0")
+        if near:
+            print(f"    '~0' sessions [{role}], by CI width: " + ", ".join(
+                f"{e} (bps {m:+.3f}, ci_w {w:.3f})" for w, e, m in near))
     moved = [s["eid"][:8] for s in rows if co(s, "best")["band"] != co(s, "last")["band"]]
     print(f"  band differs best vs last: {len(moved)}/{len(rows)} {moved if moved else ''}")
     if cohort == "bwm":
@@ -119,14 +142,15 @@ def main():
     if stray:
         print(f"NOTE: {len(stray)} summaries outside the manifest ignored: {sorted(stray)}")
 
+    print("\n" + LEGEND)
     print("\n=== per-session table (primary population) ===")
     print(f"{'eid':9s} {'coh':4s} {'cell':28s} {'clust':>5s} {'train':>5s} {'band':>4s} "
-          f"{'bps':>8s} {'ci95':>19s} {'med':>7s} {'t_var':>6s} {'last':>4s} {'reuse':>5s}")
+          f"{'bps':>8s} {'ci95':>19s} {'ci_w':>8s} {'med':>7s} {'t_var':>6s} {'last':>4s} {'reuse':>5s}")
     for s in sorted(rows, key=lambda r: (r["cohort"], r["cell"], r["eid"])):
         b = co(s)
         print(f"{s['eid'][:8]:9s} {s['cohort']:4s} {s['cell']:28s} {s['clusters']:>5d} "
               f"{s['n_train']:>5d} {b['band']:>4s} {b['mean_bps']:>+8.4f} "
-              f"[{b['ci95_lo']:+.4f},{b['ci95_hi']:+.4f}] {b['median_bps']:>+7.4f} "
+              f"[{b['ci95_lo']:+.4f},{b['ci95_hi']:+.4f}] {ci_width(b):>8.3f} {b['median_bps']:>+7.4f} "
               f"{b['median_temporal_variation_ratio']:>6.3f} {co(s, 'last')['band']:>4s} "
               f"{'yes' if s['reused_pilot_pretrain'] else '':>5s}")
 
@@ -145,7 +169,7 @@ def main():
         if p.is_file():
             t = json.loads(p.read_text())["variants"]["trained"]["co_smooth"]
             print(f"  {r['eid'][:8]} {r['cohort']:4s} band {t['band']:>3s} bps {t['mean_bps']:+.4f} "
-                  f"CI [{t['ci95_lo']:+.4f},{t['ci95_hi']:+.4f}] t_var "
+                  f"CI [{t['ci95_lo']:+.4f},{t['ci95_hi']:+.4f}] ci_w {ci_width(t):.3f} t_var "
                   f"{t['median_temporal_variation_ratio']:.3f}  (pilot Stage 3-diag, best only)")
         else:
             print(f"  {r['eid'][:8]} — no pilot own-session summary found")
