@@ -432,6 +432,15 @@ def main():
             del model
             torch.cuda.empty_cache()
 
+    # M3: untrained references are built by current code, i.e. EID-keyed (v2). A
+    # trained model loaded from a pre-M3 pickle is count-keyed (v1), so bring it
+    # into v2 key space before comparing. Single session, so the map is
+    # unambiguous; its size was already audited (3a).
+    if ctx.untrained_seeds:
+        from ndt.compat import _V1_KEY, remap_v1_stitch_keys
+        if any(_V1_KEY.match(k) for k in trained_sd):
+            trained_sd = remap_v1_stitch_keys(trained_sd, [[eid, a["clusters"]]])
+
     untrained_sds = {}
     for s in ctx.untrained_seeds:
         m = build_untrained(eid, s, accelerator)
