@@ -4,7 +4,7 @@ import os
 import time
 import json
 from ..utils.utils import move_batch_to_device, metrics_list, plot_gt_pred, plot_neurons_r2
-from ..vocab import vocab_metadata
+from ..vocab import vocab_metadata, model_session_num_neurons
 from tqdm import tqdm
 
 
@@ -518,6 +518,9 @@ class Trainer():
         # to this list, so a checkpoint without it cannot be interpreted.
         vocab = self.session_vocab()
         if vocab is not None:
-            dict_config.update(vocab_metadata(vocab, self.vocabulary_ordering_rule))
+            # M3 (v2): also the [eid, n_neurons] map, read from the stitcher, so an
+            # EID-keyed checkpoint can be rebuilt from its metadata alone.
+            dict_config.update(vocab_metadata(vocab, self.vocabulary_ordering_rule,
+                                              session_num_neurons=model_session_num_neurons(self.model)))
         torch.save(dict_config, os.path.join(self.log_dir, f"model_{name}.pt"))
         

@@ -292,10 +292,177 @@ def m2():
         check("M2o. a mixed-EID batch raises in the forward", "mixed-session" in str(e))
 
 
+# ---------------------------------------------------------------- M3
+SETA = [["862ade13-53cd-4221-a3fa-dda8643641f2", 258], ["5437ec1f-6535-470c-80b8-4c8806ee085d", 549],
+        ["d9f0c293-df4c-410a-846d-842e47c6b502", 556]]
+SETA_REF = "/work/nvme/beml/ac136/IBL_MTM/results/multisession/ms_setA_a/ms/train"
+
+
+def _build(smap, seed=0, multi=True):
+    import torch
+    from ndt.models.ndt1 import NDT1
+    from ndt.utils.config_utils import config_from_kwargs, update_config
+    from ndt.paths import config_path
+    cfg = config_from_kwargs({"model": "include:" + config_path("ndt1_stitching")})
+    cfg = update_config(config_path("ndt1_stitching"), cfg)
+    cfg = update_config(config_path("ssl_sessions_trainer" if multi else "ssl_session_trainer"), cfg)
+    uniq = []
+    for _, n in smap:
+        if n not in uniq:
+            uniq.append(n)
+    meta = {"num_neurons": uniq, "num_sessions": len(smap), "eids": {e for e, _ in smap},
+            "session_num_neurons": smap}
+    torch.manual_seed(seed)
+    return NDT1(cfg.model, **cfg.method.model_kwargs, **meta, session_vocab=[e for e, _ in smap]), cfg
+
+
+def m3():
+    import io, contextlib, json, re, subprocess, tempfile
+    import torch
+    from ndt.vocab import (CHECKPOINT_FORMAT_VERSION, SESSION_MAP_KEY, vocab_metadata,
+                           model_session_num_neurons, assert_pickle_consistent, VocabularyError,
+                           classify_state_dict_keys, filter_transfer_state_dict)
+    from ndt.compat import (remap_v1_stitch_keys, resave_as_state_dict, load_model_from_state_dict,
+                            load_pickled_model)
+    quiet = lambda: contextlib.redirect_stdout(io.StringIO())
+    A, B = "aaaaaaaa-0000-0000-0000-000000000000", "bbbbbbbb-0000-0000-0000-000000000000"
+
+    # a. same-count fixture: distinct EID-keyed projections, gradient isolation
+    m, _ = _build([[A, 6], [B, 6]])
+    st, dec = m.encoder.stitcher, m.stitch_decoder
+    check("M3a. same-count sessions get distinct EID-keyed stitchers and decoders",
+          list(st.stitcher_dict) == [A, B] and list(dec.stitch_decoder_dict) == [A, B]
+          and st.stitcher_dict[A] is not st.stitcher_dict[B] and st.key_by == "eid")
+    m.zero_grad()
+    x = torch.randn(3, 100, 6)
+    # stitcher and decoder sit on either side of the transformer (668 channels in,
+    # 512 hidden out), so each gets its own input
+    st(x, eid=A).sum().backward()
+    dec(torch.randn(3, 100, dec.stitch_decoder_dict[A].in_features), eid=A).sum().backward()
+    g = lambda mod: [p.grad for p in mod.parameters()]
+    a_grads = all(gr is not None and gr.abs().sum() > 0 for gr in g(st.stitcher_dict[A]) + g(dec.stitch_decoder_dict[A]))
+    b_clean = all(gr is None or gr.abs().sum() == 0 for gr in g(st.stitcher_dict[B]) + g(dec.stitch_decoder_dict[B]))
+    check("M3b. a batch of session A trains A's projections and never touches B's", a_grads and b_clean)
+    with torch.no_grad():
+        y0 = st(x, eid=A).clone(); st.stitcher_dict[B].weight.add_(1.0); y1 = st(x, eid=A)
+    check("M3c. routing: A's output is independent of B's weights", torch.equal(y0, y1))
+
+    # b. v1 pickles still route by count
+    with quiet():
+        v1, vocab, _, ver = load_pickled_model(f"{SETA_REF}/model_best.pt")
+    s1 = v1.encoder.stitcher
+    xx = torch.randn(2, 100, 549)
+    check("M3d. v1 pickle (no key_by) routes by count under the new code",
+          getattr(s1, "key_by", "count") == "count" and ver == 1 and
+          torch.equal(s1(xx, eid=SETA[1][0], num_neuron=549), s1.stitcher_dict["549"](xx)))
+
+    # c. remap rules
+    v1sd = torch.load(f"{SETA_REF}/model_best.state_dict.pt", map_location="cpu", weights_only=False)["state_dict"]
+    r = remap_v1_stitch_keys(v1sd, SETA)
+    changed = set(v1sd) ^ set(r)
+    proj = lambda k: ".stitcher_dict." in k or ".stitch_decoder_dict." in k
+    check("M3e. injective remap: only projection keys renamed, every value identical",
+          all(proj(k) for k in changed) and len(changed) == 24 and
+          all(torch.equal(v1sd[k], r[k]) for k in v1sd if k in r))
+    ren = {re.sub(r"(stitcher_dict|stitch_decoder_dict)\.(\d+)\.",
+                  lambda g: f"{g.group(1)}.{dict((str(n), e) for e, n in SETA)[g.group(2)]}.", k): v
+           for k, v in v1sd.items()}
+    check("M3f. remapped values equal the v1 values under the expected names",
+          set(ren) == set(r) and all(torch.equal(ren[k], r[k]) for k in r))
+    def refuses(smap):
+        try:
+            remap_v1_stitch_keys(v1sd, smap); return False
+        except VocabularyError:
+            return True
+    check("M3g. two sessions sharing a count -> refused as ambiguous",
+          refuses([[SETA[0][0], 258], [SETA[1][0], 549], ["x" * 8 + SETA[2][0][8:], 549]]))
+    check("M3h. a count key with no session in the map -> refused", refuses(SETA[:2]))
+    check("M3i. a mapped session with no projection -> refused", refuses(SETA + [[A, 999]]))
+
+    # d. v2 metadata, resave, and state_dict loading
+    check("M3j. CHECKPOINT_FORMAT_VERSION == 2", CHECKPOINT_FORMAT_VERSION == 2)
+    m2_, cfg = _build(SETA, seed=1)
+    tmp = Path(tempfile.mkdtemp())
+    pkl = tmp / "model_best.pt"
+    torch.save({"model": m2_, "epoch": 0, **vocab_metadata([e for e, _ in SETA], "manifest",
+                session_num_neurons=model_session_num_neurons(m2_))}, pkl)
+    with quiet():
+        resave_as_state_dict(pkl, tmp / "model_best.state_dict.pt")
+    saved = torch.load(tmp / "model_best.state_dict.pt", weights_only=False)
+    check("M3k. v2 checkpoint and state_dict carry the ordered session map",
+          saved.get(SESSION_MAP_KEY) == SETA and saved.get("checkpoint_format_version") == 2)
+    kw = dict(num_neurons=[258, 549, 556], num_sessions=3, eids={e for e, _ in SETA},
+              **cfg.method.model_kwargs)
+    with quiet():
+        rb, *_ = load_model_from_state_dict(tmp / "model_best.state_dict.pt", cfg.model, **kw)
+    check("M3l. v2 state_dict rebuilds from its metadata alone, exactly",
+          all(torch.equal(rb.state_dict()[k], m2_.state_dict()[k]) for k in m2_.state_dict()))
+    with quiet():
+        rv1, *_ = load_model_from_state_dict(f"{SETA_REF}/model_best.state_dict.pt", cfg.model,
+                                             session_num_neurons=SETA, **kw)
+    check("M3m. v1 multi-session state_dict + supplied map -> loads into a v2 model exactly",
+          all(torch.equal(rv1.state_dict()[k], r[k]) for k in r))
+    try:
+        with quiet():
+            load_model_from_state_dict(f"{SETA_REF}/model_best.state_dict.pt", cfg.model, **kw)
+        check("M3n. v1 multi-session state_dict WITHOUT a map -> refused", False)
+    except VocabularyError:
+        check("M3n. v1 multi-session state_dict WITHOUT a map -> refused", True)
+    bad = {"model": m2_, SESSION_MAP_KEY: [[e, n + 1] for e, n in SETA],
+           **vocab_metadata([e for e, _ in SETA], "manifest")}
+    try:
+        assert_pickle_consistent(bad, m2_)
+        check("M3o. a pickle whose recorded map disagrees with its stitcher -> refused", False)
+    except VocabularyError:
+        check("M3o. a pickle whose recorded map disagrees with its stitcher -> refused", True)
+
+    # e. multi-source transfer accounting (M4 V3's contract, offline)
+    src = m2_.state_dict()
+    tgt, _ = _build([[A, 300]], seed=7, multi=False)
+    pre = {k: v.clone() for k, v in tgt.state_dict().items()}
+    s_sh, s_sp = classify_state_dict_keys(src.keys())
+    t_sh, t_sp = classify_state_dict_keys(pre.keys())
+    with quiet():
+        missing, unexpected = tgt.load_state_dict(filter_transfer_state_dict(src, verbose=False), strict=False)
+    post = tgt.state_dict()
+    check("M3p. 3-session source -> 1-session target: 89 shared + 13 source-specific; "
+          "89 inherited exactly; target's 5 specific untouched",
+          len(s_sh) == 89 and len(s_sp) == 13 and len(t_sp) == 5 and not unexpected
+          and set(missing) == set(t_sp)
+          and all(torch.equal(post[k], src[k]) for k in s_sh)
+          and all(torch.equal(post[k], pre[k]) for k in t_sp))
+
+    # f. RNG equivalence against the M2 (count-keyed) construction
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run(f"git -C {REPO} archive ms_reference_pre1b ndt | tar -x -C {d}", shell=True, check=True)
+        # Importing test_multisession puts THIS repo first on sys.path; re-insert the
+        # tree under test afterwards, or both builds silently use the new code and
+        # the comparison is M3 against itself. Assert which module actually loaded.
+        prog = ("import sys,torch; sys.path.insert(0, sys.argv[2]+'/script');"
+                "import test_multisession as T; sys.path.insert(0, sys.argv[1]);"
+                "m,_=T._build(T.SETA, seed=42); import ndt.models.ndt1 as N;"
+                "assert N.__file__.startswith(sys.argv[1]), N.__file__;"
+                "torch.save({'sd': m.state_dict(), 'after': torch.randn(8), 'src': N.__file__}, sys.argv[3])")
+        # the M2 tree's NDT1 ignores session_num_neurons and keys by count
+        subprocess.run([sys.executable, "-c", prog, d, str(REPO), f"{d}/old.pt"], check=True,
+                       capture_output=True)
+        subprocess.run([sys.executable, "-c", prog, str(REPO), str(REPO), f"{d}/new.pt"], check=True,
+                       capture_output=True)
+        o, n = torch.load(f"{d}/old.pt"), torch.load(f"{d}/new.pt")
+    check("M3q0. the 'old' build really came from the M2 tree (non-vacuity)",
+          not o["src"].startswith(str(REPO)) and any(re.search(r"_dict\.\d+\.", k) for k in o["sd"]),
+          o["src"])
+    ro = remap_v1_stitch_keys(o["sd"], SETA)
+    check("M3q. RNG equivalence: M3 set-A construction == M2's after remap, same RNG position",
+          set(ro) == set(n["sd"]) and all(torch.equal(ro[k], n["sd"][k]) for k in ro)
+          and torch.equal(o["after"], n["after"]))
+
+
 if __name__ == "__main__":
     m0()
     m1()
     m2()
+    m3()
     print("=" * 72)
     for ok, name, detail in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"   {detail}" if detail else ""))

@@ -65,8 +65,19 @@ def main(argv):
     shared, specific = classify_state_dict_keys(pre.keys())
     bare = tgt_eid.removesuffix("_aligned")
 
-    check("1. source and target are different sessions",
-          (src_vocab or [None])[0] != bare, f"{(src_vocab or [None])[0]} vs {bare}")
+    # M3 (M-g): a source may be multi-session. The target must be in none of its
+    # sessions, and the source's own classification is reported: 89 shared plus
+    # 1 + 4N source-specific (embedding + a stitcher and decoder weight/bias per
+    # session), all of which the filter excludes.
+    src_eids = [str(e).removesuffix("_aligned") for e in (src_vocab or [])]
+    check("1. target is not one of the source's sessions",
+          bare not in src_eids, f"target {bare[:8]} vs source {[e[:8] for e in src_eids]}")
+    src_shared, src_specific = classify_state_dict_keys(src_sd.keys())
+    n_src = len(src_eids) or 1
+    check(f"1b. source classification: {len(src_shared)} shared + {len(src_specific)} "
+          f"source-specific (1 + 4x{n_src})",
+          len(src_shared) == len(shared) and len(src_specific) == 1 + 4 * n_src,
+          f"shared {len(src_shared)} (target {len(shared)}), specific {len(src_specific)}")
     check("2. target vocabulary is [H] and resolves to row 0",
           list(model.encoder.embedder.eid_lookup) == [bare]
           and model.encoder.embedder.eid_to_indx[bare] == 0,

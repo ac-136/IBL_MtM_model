@@ -440,7 +440,9 @@ class NeuralEncoder(nn.Module):
         # Build stitcher
         if config.stitching:
             self.stitcher = NeuralStitcher(kwargs['num_neurons'],
-                                           config.embedder.n_channels)
+                                           config.embedder.n_channels,
+                                           session_num_neurons=kwargs.get('session_num_neurons'),
+                                           session_vocab=kwargs.get('session_vocab'))
 
         self.use_session = config.embedder.use_session
 
@@ -504,7 +506,7 @@ class NeuralEncoder(nn.Module):
         
         # stitcher
         if hasattr(self, 'stitcher'):
-            spikes = self.stitcher(spikes, str(num_neuron))
+            spikes = self.stitcher(spikes, eid=eid, num_neuron=num_neuron)
         # Embed neural data
         x, spikes_mask, spikes_timestamp = self.embedder(
             spikes, spikes_mask, spikes_timestamp, block_idx, date_idx, targets_mask, masking_mode, eid
@@ -532,44 +534,93 @@ class NeuralEncoder(nn.Module):
         return self.out_proj(x), targets_mask
 
 
+def _bare_eid(eid):
+    return str(eid).removesuffix("_aligned")
+
+
+def session_stitch_plan(num_neurons, session_num_neurons=None, session_vocab=None):
+    """(M3) The ordered [(eid, n_neurons)] the stitcher and decoder are built from.
+
+    Keys are session EIDs, not neuron counts (defect 1b: count keys made two
+    sessions with the same number of neurons silently share projections).
+    Order is the session vocabulary's, so module registration -- and therefore
+    which RNG draws each projection receives -- is fixed by the vocabulary. For
+    sessions with distinct counts in vocabulary order this is the same sequence
+    of shapes the count-keyed code drew, so values are unchanged; only the
+    names differ.
+
+    ``session_num_neurons`` is meta_data's ordered [eid, n] map (M1). Without it
+    the plan is only unambiguous for a single session, where it is inferred.
+    """
+    vocab = [_bare_eid(e) for e in session_vocab] if session_vocab else None
+    if session_num_neurons:
+        counts = {}
+        for e, n in session_num_neurons:
+            counts[_bare_eid(e)] = int(n)
+        if vocab is None:
+            return [(e, n) for e, n in counts.items()]
+        stray = sorted(set(counts) - set(vocab))
+        if stray:
+            raise ValueError(f"sessions {stray} have data but no vocabulary row")
+        # A vocabulary may hold sessions without data (the legacy 40-entry list
+        # trained one session); projections exist only for sessions with data, in
+        # vocabulary order. For multi-session training the two sets are equal.
+        return [(e, counts[e]) for e in vocab if e in counts]
+    if vocab is not None and len(vocab) == 1 and len(num_neurons) == 1:
+        return [(vocab[0], int(num_neurons[0]))]
+    raise ValueError(
+        "EID-keyed stitching needs session_num_neurons (meta_data['session_num_neurons']) "
+        f"for a {len(num_neurons)}-count / {len(vocab or [])}-session model")
+
+
 class NeuralStitcher(nn.Module):
+    """Per-session input projection, keyed by session EID (M3, checkpoint format v2).
 
-    def __init__(self, 
-                 num_neurons:list,
-                 n_channels:int,):
-        super().__init__()
-        # print()
-        # print("Stitcher dict instantiation: ")
-        # print(f"num_neurons: {num_neurons}, n_channels: {n_channels}")
-
-        stitcher_dict = {}
-        for num_neuron in num_neurons:
-            stitcher_dict[str(num_neuron)] = nn.Linear(num_neuron, n_channels)
-        self.stitcher_dict = nn.ModuleDict(stitcher_dict)
-
-        # print("End of instantiation: ", list(self.stitcher_dict.keys()))
-
-    def forward(self, x, block_idx):
-        # print("Neural Stitcher check")
-        # print(f"Available keys: {list(self.stitcher_dict.keys())}")
-        # print(f"Requested block_idx: {block_idx}")
-        # print()
-        return self.stitcher_dict[block_idx](x)
-    
-class StitchDecoder(nn.Module):
+    ``key_by`` records the keying. Pickles written before M3 have no such
+    attribute and a count-keyed ModuleDict; ``getattr(self, "key_by", "count")``
+    keeps them loadable and correct under this code, which is the hazard noted
+    at Step 0 (the class a pickle names can change underneath it).
+    """
 
     def __init__(self,
                  num_neurons:list,
-                 n_channels:int):
+                 n_channels:int,
+                 session_num_neurons=None,
+                 session_vocab=None):
         super().__init__()
+        stitcher_dict = {}
+        for eid, num_neuron in session_stitch_plan(num_neurons, session_num_neurons,
+                                                   session_vocab):
+            stitcher_dict[eid] = nn.Linear(num_neuron, n_channels)
+        self.stitcher_dict = nn.ModuleDict(stitcher_dict)
+        self.key_by = "eid"
 
+    def forward(self, x, eid=None, num_neuron=None):
+        if getattr(self, "key_by", "count") == "eid":
+            return self.stitcher_dict[_bare_eid(eid)](x)
+        return self.stitcher_dict[str(num_neuron)](x)
+
+
+class StitchDecoder(nn.Module):
+    """Per-session output projection, keyed by session EID. See NeuralStitcher."""
+
+    def __init__(self,
+                 num_neurons:list,
+                 n_channels:int,
+                 session_num_neurons=None,
+                 session_vocab=None):
+        super().__init__()
         stitch_decoder_dict = {}
-        for num_neuron in num_neurons:
-            stitch_decoder_dict[str(num_neuron)] = nn.Linear(n_channels, num_neuron)
+        for eid, num_neuron in session_stitch_plan(num_neurons, session_num_neurons,
+                                                   session_vocab):
+            stitch_decoder_dict[eid] = nn.Linear(n_channels, num_neuron)
         self.stitch_decoder_dict = nn.ModuleDict(stitch_decoder_dict)
+        self.key_by = "eid"
 
-    def forward(self, x, block_idx):
-        return self.stitch_decoder_dict[block_idx](x)
+    def forward(self, x, eid=None, num_neuron=None):
+        if getattr(self, "key_by", "count") == "eid":
+            return self.stitch_decoder_dict[_bare_eid(eid)](x)
+        return self.stitch_decoder_dict[str(num_neuron)](x)
 
 # Encoder for time binned neural data
 class NDT1(nn.Module):
@@ -610,7 +661,9 @@ class NDT1(nn.Module):
             self.stitching=True
             self.n_channels = config.encoder.embedder.n_channels
             self.hidden_size = config.encoder.transformer.hidden_size
-            self.stitch_decoder = StitchDecoder(kwargs['num_neurons'], self.hidden_size)
+            self.stitch_decoder = StitchDecoder(kwargs['num_neurons'], self.hidden_size,
+                                                session_num_neurons=kwargs.get('session_num_neurons'),
+                                                session_vocab=kwargs.get('session_vocab'))
         else:
             self.n_channels = kwargs['num_neurons'][0]
 
@@ -746,7 +799,7 @@ class NDT1(nn.Module):
             x = x.flatten(start_dim=1)
 
         if hasattr(self, "stitching") and self.method == "ssl":
-            outputs = self.stitch_decoder(x, str(num_neuron))
+            outputs = self.stitch_decoder(x, eid=eid, num_neuron=num_neuron)
         else:
             outputs = self.decoder(x)
 

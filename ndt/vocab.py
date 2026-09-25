@@ -16,7 +16,9 @@ assume.
 #   missing -> v0, legacy, written before vocabularies were recorded
 #   1       -> explicit-vocabulary checkpoint
 #   2       -> reserved for 1b, when the stitcher/decoder state_dict is re-keyed
-CHECKPOINT_FORMAT_VERSION = 1
+# v2 (M3): stitcher and stitch-decoder modules are keyed by session EID, and the
+# checkpoint records its ordered [eid, n_neurons] map. v1 was keyed by count.
+CHECKPOINT_FORMAT_VERSION = 2
 LEGACY_FORMAT_VERSION = 0
 
 # How the order was derived. This describes derivation only; it is not a place
@@ -29,6 +31,7 @@ RULE_SORTED = "sorted_fallback"       # no ordering supplied; sorted for determi
 VOCAB_KEY = "session_vocab"
 RULE_KEY = "vocabulary_ordering_rule"
 VERSION_KEY = "checkpoint_format_version"
+SESSION_MAP_KEY = "session_num_neurons"   # v2: ordered [eid, n_neurons]
 
 
 class VocabularyError(ValueError):
@@ -78,9 +81,26 @@ def vocab_for_sessions(loaded_eids, ordered_eids=None):
     return sorted(loaded), RULE_SORTED
 
 
-def vocab_metadata(vocab, rule, version=CHECKPOINT_FORMAT_VERSION):
-    """The three provenance fields, as written into every artifact."""
-    return {VOCAB_KEY: list(vocab), RULE_KEY: rule, VERSION_KEY: version}
+def vocab_metadata(vocab, rule, version=CHECKPOINT_FORMAT_VERSION, session_num_neurons=None):
+    """The provenance fields written into every artifact. v2 adds the ordered
+    [eid, n_neurons] map, which is what makes an EID-keyed checkpoint
+    reconstructable from its metadata alone."""
+    out = {VOCAB_KEY: list(vocab), RULE_KEY: rule, VERSION_KEY: version}
+    if session_num_neurons is not None:
+        out[SESSION_MAP_KEY] = [[str(e), int(n)] for e, n in session_num_neurons]
+    return out
+
+
+def model_session_num_neurons(model):
+    """Ordered [eid, n_neurons] read from an EID-keyed stitcher, or None.
+
+    Read from the weights, not tracked separately, so the recorded map cannot
+    drift from the model it describes. None for a v1 (count-keyed) module."""
+    enc = getattr(model, "encoder", model)
+    stitcher = getattr(enc, "stitcher", None)
+    if stitcher is None or getattr(stitcher, "key_by", "count") != "eid":
+        return None
+    return [[e, int(m.in_features)] for e, m in stitcher.stitcher_dict.items()]
 
 
 def read_checkpoint_vocab(ckpt, legacy_vocab=None, source="checkpoint"):
@@ -166,6 +186,14 @@ def assert_pickle_consistent(ckpt, model):
             f"the pickled module carries a {len(live)}-entry one. The checkpoint "
             f"cannot be interpreted; its provenance and its weights disagree."
         )
+    # M3 (v2): the recorded [eid, n_neurons] map must match the live stitcher.
+    smap = ckpt.get(SESSION_MAP_KEY) if isinstance(ckpt, dict) else None
+    if smap is not None:
+        live_map = model_session_num_neurons(model)
+        if [[str(e), int(n)] for e, n in smap] != live_map:
+            raise VocabularyError(
+                f"Checkpoint metadata records session map {smap} but the pickled "
+                f"stitcher is {live_map}; provenance and weights disagree.")
 
 
 # --------------------------------------------------------------------------
@@ -254,19 +282,52 @@ def filter_transfer_state_dict(state_dict, verbose=True):
     return {k: state_dict[k] for k in shared}
 
 
+def stitcher_session_sizes(model, vocab=None, session_num_neurons=None):
+    """(M3, M-g) {eid: n_neurons} for each session's input projection, or None.
+
+    v2: read from the EID keys. v1 (count keys): only unambiguous for a single
+    session, where the one key belongs to the one vocabulary entry; otherwise None,
+    since a count-keyed module cannot say which session a projection belongs to.
+    """
+    enc = getattr(model, "encoder", None)
+    stitcher = getattr(enc, "stitcher", None)
+    if stitcher is None:
+        return None
+    mods = stitcher.stitcher_dict
+    if getattr(stitcher, "key_by", "count") == "eid":
+        return {e: int(m.in_features) for e, m in mods.items()}
+    if vocab is not None and len(vocab) == 1 and len(mods) == 1:
+        (m,) = mods.values()
+        return {bare(vocab[0]): int(m.in_features)}
+    # v1 multi-session with an externally recorded map (e.g. run_summary.json):
+    # attributable only under the same rule as remapping -- the map must be
+    # injective and its counts must be exactly the projections present.
+    if session_num_neurons:
+        smap = {bare(e): int(n) for e, n in session_num_neurons}
+        counts = list(smap.values())
+        if len(set(counts)) == len(counts) and \
+                sorted(counts) == sorted(int(m.in_features) for m in mods.values()) and \
+                all(str(n) in mods for n in counts):
+            return smap
+    return None
+
+
 def source_checkpoint_identity(path, expected_eid=None, expected_clusters=None,
-                               role="best"):
+                               role="best", expected_vocab=None,
+                               expected_session_num_neurons=None):
     """Pin down exactly which model a transfer run started from.
 
-    Records sha256, eid, path, best epoch and which of the three saved
-    checkpoints was used -- `best`, `last` and `epoch` all sit in the same
-    directory and only the filename tells them apart, so the role has to be
-    recorded or "which model was this?" stays inferable rather than known.
+    Records sha256, path, role, epoch and the source's sessions. The three saved
+    checkpoints (`best`, `last`, `epoch`) differ only by filename, so the role
+    has to be recorded or "which model was this?" stays inferable.
 
-    Two checks are assertions, not notes, because both would otherwise surface
-    as a confusing Stage-3 result rather than a clear failure here:
-    the checkpoint's vocabulary must be exactly the source session, and its
-    stitcher must be sized for that session's actual cluster count.
+    Assertions, not notes, because each would otherwise surface as a confusing
+    downstream result:
+      * single-session source: vocabulary == [expected_eid], and its projection is
+        sized for expected_clusters (unchanged from Stage 2c);
+      * multi-session source (M3, M-g): vocabulary == expected_vocab, and each
+        session's projection is sized for its entry in expected_session_num_neurons.
+    Per-session sizes come from module shapes, so v1 and v2 checkpoints both work.
     """
     import hashlib
     from .compat import load_checkpoint
@@ -280,36 +341,47 @@ def source_checkpoint_identity(path, expected_eid=None, expected_clusters=None,
     ckpt = load_checkpoint(path)
     vocab = ckpt.get(VOCAB_KEY) if isinstance(ckpt, dict) else None
     epoch = ckpt.get("epoch") if isinstance(ckpt, dict) else None
+    got_vocab = [bare(e) for e in (vocab or [])]
 
     if expected_eid is not None:
         want = [bare(expected_eid)]
-        got = [bare(e) for e in (vocab or [])]
-        if got != want:
+        if got_vocab != want:
             raise VocabularyError(
-                f"Source checkpoint {path} has vocabulary {got}, expected {want}. "
+                f"Source checkpoint {path} has vocabulary {got_vocab}, expected {want}. "
                 f"Either the wrong checkpoint was passed or its provenance is wrong; "
                 f"a transfer from it could not be attributed to a source session."
             )
+    if expected_vocab is not None and got_vocab != [bare(e) for e in expected_vocab]:
+        raise VocabularyError(
+            f"Source checkpoint {path} has vocabulary {got_vocab}, expected "
+            f"{[bare(e) for e in expected_vocab]} (order matters: it defines embedding rows).")
 
     model = ckpt.get("model") if isinstance(ckpt, dict) else None
-    stitcher = getattr(getattr(model, "encoder", None), "stitcher", None)
-    keys = sorted(stitcher.stitcher_dict.keys()) if stitcher is not None else []
-    ckpt_clusters = int(keys[0]) if len(keys) == 1 and keys[0].isdigit() else None
-    if expected_clusters is not None and ckpt_clusters is not None:
-        if ckpt_clusters != int(expected_clusters):
+    sizes = stitcher_session_sizes(model, got_vocab)
+    single = sizes[got_vocab[0]] if sizes and len(got_vocab) == 1 else None
+    if expected_clusters is not None and single is not None and single != int(expected_clusters):
+        raise VocabularyError(
+            f"Source checkpoint {path} has a stitcher for {single} clusters "
+            f"but the source session's data has {expected_clusters}. The checkpoint "
+            f"does not match the session it claims to come from."
+        )
+    if expected_session_num_neurons is not None:
+        want = {bare(e): int(n) for e, n in expected_session_num_neurons}
+        if sizes != want:
             raise VocabularyError(
-                f"Source checkpoint {path} has a stitcher for {ckpt_clusters} clusters "
-                f"but the source session's data has {expected_clusters}. The checkpoint "
-                f"does not match the session it claims to come from."
-            )
+                f"Source checkpoint {path} has per-session projection sizes {sizes}, "
+                f"expected {want}.")
 
     return {
         "source_checkpoint_path": str(path),
         "source_checkpoint_sha256": digest,
         "source_checkpoint_role": role,
         "source_checkpoint_epoch": epoch,
-        "source_eid": (vocab or [None])[0],
-        "source_clusters": ckpt_clusters,
+        "source_eid": got_vocab[0] if len(got_vocab) == 1 else None,
+        "source_clusters": single,
+        "source_session_vocab": got_vocab or None,
+        "source_session_num_neurons": ([[e, sizes[e]] for e in got_vocab if e in sizes]
+                                       if sizes else None),
         "source_" + VERSION_KEY: ckpt.get(VERSION_KEY) if isinstance(ckpt, dict) else None,
         "source_" + RULE_KEY: ckpt.get(RULE_KEY) if isinstance(ckpt, dict) else None,
     }

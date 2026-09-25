@@ -117,9 +117,57 @@ def resave_as_state_dict(src_path, dst_path, map_location="cpu"):
         out[VOCAB_KEY] = list(vocab)
         out[RULE_KEY] = rule
         out[VERSION_KEY] = version
+        # M3: a v2 state_dict must carry its [eid, n_neurons] map, or it cannot be
+        # rebuilt from metadata alone. Prefer the recorded map; else read it from
+        # the module. A v1 source has none (and needs none: count keys).
+        from .vocab import SESSION_MAP_KEY, model_session_num_neurons
+        smap = obj.get(SESSION_MAP_KEY) if isinstance(obj, dict) else None
+        smap = smap if smap is not None else model_session_num_neurons(model)
+        if smap is not None:
+            out[SESSION_MAP_KEY] = [[str(e), int(n)] for e, n in smap]
 
     torch.save(out, dst_path)
     return dst_path
+
+
+_V1_KEY = __import__("re").compile(r"^(.*\.(?:stitcher_dict|stitch_decoder_dict))\.(\d+)\.(.*)$")
+
+
+def remap_v1_stitch_keys(state_dict, session_num_neurons):
+    """(M3) Rename a v1 count-keyed state_dict to v2 EID keys. Values untouched.
+
+    Allowed ONLY when the eid -> n_neurons mapping is injective. If two sessions
+    share a count, a v1 checkpoint holds ONE projection that both used, and there
+    is no correct way to split it: conversion fails loudly as ambiguous rather
+    than guessing. (The released MtM 34-session checkpoint is refused for exactly
+    this reason, which is correct.) Also refused: a count key with no session in
+    the map, and a session in the map with no projection in the checkpoint.
+    """
+    from .vocab import VocabularyError, bare
+    pairs = [(bare(e), int(n)) for e, n in session_num_neurons]
+    by_count = {}
+    for e, n in pairs:
+        by_count.setdefault(n, []).append(e)
+    shared = {n: es for n, es in by_count.items() if len(es) > 1}
+    if shared:
+        raise VocabularyError(
+            f"v1 -> v2 remap is ambiguous: sessions share a neuron count and so share "
+            f"one v1 projection that cannot be split between them: {shared}")
+    out, seen = {}, set()
+    for k, v in state_dict.items():
+        m = _V1_KEY.match(k)
+        if m is None:
+            out[k] = v
+            continue
+        n = int(m.group(2))
+        if n not in by_count:
+            raise VocabularyError(f"v1 key {k} has count {n}, which no session in the map has")
+        out[f"{m.group(1)}.{by_count[n][0]}.{m.group(3)}"] = v
+        seen.add(n)
+    missing = sorted(set(by_count) - seen)
+    if missing:
+        raise VocabularyError(f"sessions with counts {missing} have no projection in the v1 checkpoint")
+    return out
 
 
 def load_pickled_model(path, session_vocab=None, map_location="cpu"):
@@ -195,7 +243,24 @@ def load_model_from_state_dict(path, config, session_vocab=None,
     vocab, rule, version = read_checkpoint_vocab(ckpt, source=str(path))
     vocab = assert_vocab_matches(vocab, session_vocab, source=str(path))
 
-    model = NDT1(config, session_vocab=vocab, **model_kwargs)
+    # M3: an EID-keyed (v2) model needs the [eid, n_neurons] map to be built. A v2
+    # checkpoint records it. A v1 checkpoint does not, so it is supplied by the
+    # caller (e.g. from run_summary.json) or, for one session with one key,
+    # inferred -- and the count keys are renamed under remap_v1_stitch_keys's
+    # injectivity rule.
+    from .vocab import SESSION_MAP_KEY
+    smap = ckpt.get(SESSION_MAP_KEY) or model_kwargs.pop("session_num_neurons", None)
+    counts = sorted({int(m.group(2)) for k in sd for m in [_V1_KEY.match(k)] if m})
+    if counts:
+        if smap is None and len(vocab) == 1 and len(counts) == 1:
+            smap = [[vocab[0], counts[0]]]
+        if smap is None:
+            raise VocabularyError(
+                f"{path} is count-keyed (v1) with {len(vocab)} sessions; pass "
+                f"session_num_neurons to map its projections to sessions")
+        sd = remap_v1_stitch_keys(sd, smap)
+    model_kwargs.pop("session_num_neurons", None)
+    model = NDT1(config, session_vocab=vocab, session_num_neurons=smap, **model_kwargs)
     try:
         model.load_state_dict(sd)
     except RuntimeError as e:
