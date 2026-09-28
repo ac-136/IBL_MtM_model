@@ -12,6 +12,8 @@ Population rule, enforced in code rather than by layout:
     cell), so "X/36" describes the stratified characterisation sample, not the
     natural frequency among all 303 held-in bwm sessions. rs is all measurable
     held-in rs. A pooled analysis follows, labelled EXPLORATORY.
+Forward prediction is reported per cohort as a secondary block under the same band
+rule; co-smoothing stays primary.
 Descriptive only: no threshold is derived from anything printed here.
 
 The band rule is unchanged (learnability.BAND_RULE). Next to every band the
@@ -47,10 +49,13 @@ COVARS = [("clusters", lambda s: s["clusters"]), ("n_train", lambda s: s["n_trai
           ("best_metric", lambda s: s["curve"]["best_metric"])]
 OUTCOMES = [("bps", lambda s: s["variants"]["best"]["co_smooth"]["mean_bps"]),
             ("t_var", lambda s: s["variants"]["best"]["co_smooth"]["median_temporal_variation_ratio"])]
+FP_OUTCOMES = [("fp_bps", lambda s: s["variants"]["best"]["forward_pred"]["mean_bps"]),
+               ("fp_t_var", lambda s: s["variants"]["best"]["forward_pred"]["median_temporal_variation_ratio"])]
+TASK_NAME = {"co_smooth": "co-smoothing", "forward_pred": "forward-prediction"}
 
 
-def co(s, role="best"):
-    return s["variants"][role]["co_smooth"]
+def co(s, role="best", task="co_smooth"):
+    return s["variants"][role][task]
 
 
 def ci_width(b):
@@ -65,19 +70,19 @@ LEGEND = ("Band = own-session co-smoothing bps vs the mean-rate null, from the f
           "flat in time. It is summarised per band; no threshold is applied to it.")
 
 
-def band_counts(rows, role):
+def band_counts(rows, role, task="co_smooth"):
     c = {b: 0 for b in BANDS}
     for s in rows:
-        c[co(s, role)["band"]] = c.get(co(s, role)["band"], 0) + 1
+        c[co(s, role, task)["band"]] = c.get(co(s, role, task)["band"], 0) + 1
     return c
 
 
-def correlations(rows, label):
+def correlations(rows, label, outcomes=OUTCOMES):
     print(f"\n  Spearman correlations ({label}, n={len(rows)}; descriptive only):")
-    print(f"    {'covariate':13s} " + "  ".join(f"{o:>16s}" for o, _ in OUTCOMES))
+    print(f"    {'covariate':13s} " + "  ".join(f"{o:>16s}" for o, _ in outcomes))
     for name, f in COVARS:
         cells = []
-        for _, g in OUTCOMES:
+        for _, g in outcomes:
             x = np.array([f(s) for s in rows], dtype=float)
             y = np.array([g(s) for s in rows], dtype=float)
             ok = np.isfinite(x) & np.isfinite(y)
@@ -96,34 +101,52 @@ def tvar_summary(v, band):
     return f"{band} median {np.median(v):.3f} [{min(v):.3f}, {max(v):.3f}] n={len(v)}"
 
 
-def cohort_block(rows, cohort, n_expected, phrase):
-    print(f"\n=== {cohort.upper()} — {phrase} ===")
-    print(f"  sessions reported: {len(rows)}/{n_expected}")
+def band_block(rows, n_expected, phrase, task):
+    """Band counts, t_var by band, the '~0' list and best-vs-last flips for one task."""
     for role in ("best", "last"):
-        c = band_counts(rows, role)
-        print(f"  [{role}] co-smoothing band: " + ", ".join(
+        c = band_counts(rows, role, task)
+        print(f"  [{role}] {TASK_NAME[task]} band: " + ", ".join(
             f"{c[b]}/{n_expected} {b}" for b in BANDS) + f"  ({phrase})")
         print(f"    t_var by band [{role}]: " + "; ".join(
-            tvar_summary([co(s, role)["median_temporal_variation_ratio"]
-                          for s in rows if co(s, role)["band"] == b], b) for b in BANDS))
-        near = sorted((ci_width(co(s, role)), s["eid"][:8], co(s, role)["mean_bps"],
-                       co(s, role)["median_temporal_variation_ratio"])
-                      for s in rows if co(s, role)["band"] == "~0")
+            tvar_summary([co(s, role, task)["median_temporal_variation_ratio"]
+                          for s in rows if co(s, role, task)["band"] == b], b) for b in BANDS))
+        near = sorted((ci_width(co(s, role, task)), s["eid"][:8], co(s, role, task)["mean_bps"],
+                       co(s, role, task)["median_temporal_variation_ratio"])
+                      for s in rows if co(s, role, task)["band"] == "~0")
         if near:
             print(f"    '~0' sessions [{role}], by CI width: " + ", ".join(
                 f"{e} (bps {m:+.3f}, ci_w {w:.3f}, t_var {v:.3f})" for w, e, m, v in near))
-    moved = [s["eid"][:8] for s in rows if co(s, "best")["band"] != co(s, "last")["band"]]
+    moved = [s["eid"][:8] for s in rows
+             if co(s, "best", task)["band"] != co(s, "last", task)["band"]]
     print(f"  band differs best vs last: {len(moved)}/{len(rows)} {moved if moved else ''}")
+
+
+def cell_block(rows, task):
+    print("  per 3x3 cell (best):")
+    cells = {}
+    for s in rows:
+        cells.setdefault(s["cell"], []).append(co(s, "best", task)["band"])
+    for k in sorted(cells):
+        b = cells[k]
+        print(f"    {k:30s} " + "  ".join(f"{x}:{b.count(x)}" for x in BANDS) + f"  (of {len(b)})")
+
+
+def cohort_block(rows, cohort, n_expected, phrase):
+    print(f"\n=== {cohort.upper()} — {phrase} ===")
+    print(f"  sessions reported: {len(rows)}/{n_expected}")
+    band_block(rows, n_expected, phrase, "co_smooth")
     if cohort == "bwm":
-        print("  per 3x3 cell (best):")
-        cells = {}
-        for s in rows:
-            cells.setdefault(s["cell"], []).append(co(s)["band"])
-        for k in sorted(cells):
-            b = cells[k]
-            print(f"    {k:30s} " + "  ".join(f"{x}:{b.count(x)}" for x in BANDS) + f"  (of {len(b)})")
+        cell_block(rows, "co_smooth")
     if len(rows) >= 4:
         correlations(rows, cohort)
+
+    # Secondary task: same band rule, forward prediction (held-out bins 90-99).
+    print(f"\n  --- {cohort}: forward prediction (secondary) ---")
+    band_block(rows, n_expected, phrase, "forward_pred")
+    if cohort == "bwm":
+        cell_block(rows, "forward_pred")
+    if len(rows) >= 4:
+        correlations(rows, f"{cohort}, forward prediction", FP_OUTCOMES)
 
 
 def main():
