@@ -60,7 +60,9 @@ def ci_width(b):
 LEGEND = ("Band = own-session co-smoothing bps vs the mean-rate null, from the fixed rule "
           "(learnability.BAND_RULE).\n'~0' = the 95% CI contains 0: NOT distinguishable from "
           "the null. It does NOT mean 'mean-like'; read it\nwith ci_w (CI width, hi-lo) and "
-          "t_var. No threshold is applied to ci_w; it is descriptive.")
+          "t_var. No threshold is applied to ci_w; it is descriptive.\nt_var = median temporal "
+          "variation ratio (prediction vs data). The band does not capture it: a\n'>0' run can be "
+          "flat in time. It is summarised per band; no threshold is applied to it.")
 
 
 def band_counts(rows, role):
@@ -87,6 +89,13 @@ def correlations(rows, label):
         print(f"    {name:13s} " + "  ".join(f"{c:>16s}" for c in cells))
 
 
+def tvar_summary(v, band):
+    """Median [min, max] of t_var within one band. Descriptive; no cut is applied."""
+    if not v:
+        return f"{band} n=0"
+    return f"{band} median {np.median(v):.3f} [{min(v):.3f}, {max(v):.3f}] n={len(v)}"
+
+
 def cohort_block(rows, cohort, n_expected, phrase):
     print(f"\n=== {cohort.upper()} — {phrase} ===")
     print(f"  sessions reported: {len(rows)}/{n_expected}")
@@ -94,11 +103,15 @@ def cohort_block(rows, cohort, n_expected, phrase):
         c = band_counts(rows, role)
         print(f"  [{role}] co-smoothing band: " + ", ".join(
             f"{c[b]}/{n_expected} {b}" for b in BANDS) + f"  ({phrase})")
-        near = sorted((ci_width(co(s, role)), s["eid"][:8], co(s, role)["mean_bps"])
+        print(f"    t_var by band [{role}]: " + "; ".join(
+            tvar_summary([co(s, role)["median_temporal_variation_ratio"]
+                          for s in rows if co(s, role)["band"] == b], b) for b in BANDS))
+        near = sorted((ci_width(co(s, role)), s["eid"][:8], co(s, role)["mean_bps"],
+                       co(s, role)["median_temporal_variation_ratio"])
                       for s in rows if co(s, role)["band"] == "~0")
         if near:
             print(f"    '~0' sessions [{role}], by CI width: " + ", ".join(
-                f"{e} (bps {m:+.3f}, ci_w {w:.3f})" for w, e, m in near))
+                f"{e} (bps {m:+.3f}, ci_w {w:.3f}, t_var {v:.3f})" for w, e, m, v in near))
     moved = [s["eid"][:8] for s in rows if co(s, "best")["band"] != co(s, "last")["band"]]
     print(f"  band differs best vs last: {len(moved)}/{len(rows)} {moved if moved else ''}")
     if cohort == "bwm":
