@@ -65,7 +65,12 @@ def build(vocab, num_neurons, seed=None):
     been inherited.
     """
     cfg = build_config()
-    meta = {"num_neurons": num_neurons, "num_sessions": len(vocab), "eids": set(vocab)}
+    # M3: EID-keyed projections need the [eid, n_neurons] map. Paired one-to-one
+    # when the lists match; a legacy 40-entry vocabulary trained its first session.
+    smap = ([[e, n] for e, n in zip(vocab, num_neurons)] if len(vocab) == len(num_neurons)
+            else [[vocab[0], num_neurons[0]]])
+    meta = {"num_neurons": num_neurons, "num_sessions": len(vocab), "eids": set(vocab),
+            "session_num_neurons": smap}
     cfg = update_config(cfg, meta)
     set_seed(cfg.seed if seed is None else seed)
     return NDT1(cfg.model, **cfg.method.model_kwargs, **meta,
@@ -198,11 +203,21 @@ def main():
     # or load_state_dict mutates it too and the comparison becomes trivially true.
     pre_sd = {k: v.clone() for k, v in dst.state_dict().items()}
 
-    check("source and target have identical key sets (the dangerous case)",
-          lambda: None if set(src_sd) == set(pre_sd) else
-          (_ for _ in ()).throw(AssertionError("key sets differ; fixture is not testing the hazard")))
+    # M3 (v2): before 1b, same-count S and H had IDENTICAL key sets -- their count-
+    # keyed projections shared names, the dangerous case. With EID keys the only
+    # difference is exactly those projections; embed_session.weight still shares a
+    # name, so the transfer filter is still load-bearing for the embedding.
+    diff = set(src_sd) ^ set(pre_sd)
+    proj = lambda k: ".stitcher_dict." in k or ".stitch_decoder_dict." in k
+    check("v2: S and H differ ONLY in their EID-keyed projections (1b: no name collision)",
+          lambda: None if diff and all(proj(k) for k in diff) and len(diff) == 8 else
+          (_ for _ in ()).throw(AssertionError(f"unexpected key difference: {sorted(diff)[:6]}")))
+    check("v2: embed_session.weight still shares a name, so the filter is still needed",
+          lambda: None if "encoder.embedder.embed_session.weight" in set(src_sd) & set(pre_sd) else
+          (_ for _ in ()).throw(AssertionError("embed_session name no longer shared")))
 
     shared, specific = classify_state_dict_keys(src_sd.keys())
+    _, specific_dst = classify_state_dict_keys(pre_sd.keys())
     check(f"every key classified: {len(shared)} shared + {len(specific)} session-specific"
           f" == {len(src_sd)}",
           lambda: None if len(shared) + len(specific) == len(src_sd) else
@@ -212,7 +227,8 @@ def main():
     # pass no matter what the load did. Constant-initialised tensors are allowed to
     # match and are not evidence either way, so require at least one NON-constant
     # session-specific tensor to differ.
-    spec_differ = [k for k in specific if not torch.equal(src_sd[k], pre_sd[k])]
+    spec_differ = [k for k in specific if k in pre_sd and not torch.equal(src_sd[k], pre_sd[k])]
+    spec_differ += [k for k in specific if k not in pre_sd]   # EID-keyed: distinct by name
     check(f"non-vacuity: {len(spec_differ)}/{len(specific)} session-specific tensors "
           f"differ between S and H before loading",
           lambda: None if spec_differ else
@@ -234,8 +250,8 @@ def main():
           lambda: None if not unexpected else
           (_ for _ in ()).throw(AssertionError(f"unexpected: {unexpected}")))
     check("exactly the session-specific keys are left un-loaded",
-          lambda: None if set(missing) == set(specific) else
-          (_ for _ in ()).throw(AssertionError(f"missing != specific: {set(missing) ^ set(specific)}")))
+          lambda: None if set(missing) == set(specific_dst) else
+          (_ for _ in ()).throw(AssertionError(f"missing != specific: {set(missing) ^ set(specific_dst)}")))
 
     post_sd = dst.state_dict()
 
@@ -245,8 +261,8 @@ def main():
           (_ for _ in ()).throw(AssertionError(
               f"{len(bad_shared)} shared tensor(s) did not transfer: {sorted(bad_shared)[:5]}")))
 
-    bad_spec = [k for k in specific if not torch.equal(post_sd[k], pre_sd[k])]
-    check(f"SESSION-SPECIFIC: all {len(specific)} tensors post_load == H's pre-load "
+    bad_spec = [k for k in specific_dst if not torch.equal(post_sd[k], pre_sd[k])]
+    check(f"SESSION-SPECIFIC: all {len(specific_dst)} tensors post_load == H's pre-load "
           f"state exactly (untouched by the load)",
           lambda: None if not bad_spec else
           (_ for _ in ()).throw(AssertionError(

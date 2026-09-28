@@ -198,13 +198,14 @@ def audit(eid, log, ctx=PILOT):
              str(ck_last.get("session_vocab")))
         epochs["last"] = ck_last.get("epoch")
 
-    # 3. geometry: the stitcher is keyed on THIS session's cluster count
+    # 3. geometry: this session's input projection is sized for its cluster count.
+    # M3 (M-g): read from module shapes, not by parsing a numeric key, so v1
+    # (count-keyed) and v2 (EID-keyed) checkpoints are audited identically.
+    from ndt.vocab import stitcher_session_sizes
     clusters = pf.clusters_of(eid)
-    keys = list(ck["model"].state_dict())
-    stitch = sorted({re.search(r"stitcher_dict\.(\d+)\.", k).group(1)
-                     for k in keys if "stitcher_dict." in k})
-    need(stitch == [str(clusters)], "3a. stitcher keyed on the session's cluster count",
-         f"keys {stitch} vs parquet {clusters}")
+    sizes = stitcher_session_sizes(ck["model"], [eid])
+    need(sizes == {eid: clusters}, "3a. stitcher sized for the session's cluster count",
+         f"projections {sizes} vs parquet {clusters}")
     planned = pf.SOURCES[eid][1] if ctx.manifest is None else ctx.manifest[eid]["clusters"]
     need(planned == clusters, "3b. cluster count matches the plan",
          f"{planned} vs {clusters}")
@@ -430,6 +431,15 @@ def main():
         else:
             del model
             torch.cuda.empty_cache()
+
+    # M3: untrained references are built by current code, i.e. EID-keyed (v2). A
+    # trained model loaded from a pre-M3 pickle is count-keyed (v1), so bring it
+    # into v2 key space before comparing. Single session, so the map is
+    # unambiguous; its size was already audited (3a).
+    if ctx.untrained_seeds:
+        from ndt.compat import _V1_KEY, remap_v1_stitch_keys
+        if any(_V1_KEY.match(k) for k in trained_sd):
+            trained_sd = remap_v1_stitch_keys(trained_sd, [[eid, a["clusters"]]])
 
     untrained_sds = {}
     for s in ctx.untrained_seeds:
