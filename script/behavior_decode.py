@@ -251,8 +251,15 @@ def train_heads(feats, prepared, epochs, seed, device, model, log):
         div_factor=DIV_FACTOR, anneal_strategy="cos")
     gen = torch.Generator().manual_seed(seed)
 
+    # Fixed before training: train-derived null predictor scored on val.
+    null = dc.null_val_losses(prepared["targets"]["train"], prepared["targets"]["val"])
+    log.append((set(null) == set(names) and all(v > 0 and math.isfinite(v) for v in null.values()),
+                "r. null val loss finite and positive for every active target",
+                ", ".join(f"{n} {v:.4g}" for n, v in null.items())))
+
     hist = {f"{s}_{k}": [] for s in ("train", "val") for k in ["total", *names]}
-    best = {"epoch": -1, "val_total": math.inf, "state": None}
+    hist["val_selection_score"] = []
+    best = {"epoch": -1, "score": math.inf, "val_total": math.inf, "state": None}
     per_target = {n: {"epoch": -1, "val_loss": math.inf} for n in names}
 
     for epoch in range(epochs):
@@ -272,9 +279,10 @@ def train_heads(feats, prepared, epochs, seed, device, model, log):
                 hist[f"{s}_total"].append(float(total))
                 for n in names:
                     hist[f"{s}_{n}"].append(float(comps[n][0]))
-        v = hist["val_total"][-1]
-        if v < best["val_total"]:
-            best = {"epoch": epoch, "val_total": v,
+        score = dc.selection_score({n: hist[f"val_{n}"][-1] for n in names}, null)
+        hist["val_selection_score"].append(score)
+        if score < best["score"]:
+            best = {"epoch": epoch, "score": score, "val_total": hist["val_total"][-1],
                     "state": {k: t.detach().clone() for k, t in heads.state_dict().items()}}
         for n in names:
             if hist[f"val_{n}"][-1] < per_target[n]["val_loss"]:
@@ -282,12 +290,17 @@ def train_heads(feats, prepared, epochs, seed, device, model, log):
 
     heads.load_state_dict(best["state"])
     selection = {
-        "rule": "joint epoch = argmin val total loss (first occurrence); only it is test-evaluated",
-        "epochs": epochs, "joint_epoch": best["epoch"], "joint_val_total": best["val_total"],
+        "rule": ("joint epoch = argmin over epochs of mean_t(val_loss_t / null_val_loss_t), "
+                 "equally weighted over active targets (first occurrence); only it is "
+                 "test-evaluated. Training minimises the unweighted sum of the train losses."),
+        "null_val_loss": null,
+        "epochs": epochs, "joint_epoch": best["epoch"], "joint_score": best["score"],
+        "joint_val_total": best["val_total"],
         "per_target_diagnostic": {
             n: {"own_best_epoch": per_target[n]["epoch"],
                 "own_best_val_loss": per_target[n]["val_loss"],
-                "val_loss_at_joint_epoch": hist[f"val_{n}"][best["epoch"]]}
+                "val_loss_at_joint_epoch": hist[f"val_{n}"][best["epoch"]],
+                "normalized_val_loss_at_joint_epoch": hist[f"val_{n}"][best["epoch"]] / null[n]}
             for n in names},
         "note": "per-target epochs are diagnostic only; no weights kept, never test-evaluated",
     }
@@ -366,7 +379,8 @@ def main():
 
     n_fail = sum(not ok for ok, _, _ in log)
     print("\n--- all checks ---"); show()
-    print(f"\njoint epoch {selection['joint_epoch']} (val total {selection['joint_val_total']:.5f})")
+    print(f"\njoint epoch {selection['joint_epoch']} (selection score {selection['joint_score']:.5f}, "
+          f"val total {selection['joint_val_total']:.5f})")
     for n, m in metrics.items():
         own = selection["per_target_diagnostic"][n]
         print(f"  {n:22s} " + "  ".join(f"{k} {v:+.4f}" for k, v in m.items() if isinstance(v, float))
@@ -387,7 +401,10 @@ def main():
         "data_root": args.data_root, "seed": args.seed,
         "optim": {"lr": LR, "wd": WD, "eps": EPS, "batch": BATCH, "warmup": WARMUP,
                   "div_factor": DIV_FACTOR, "epochs": args.epochs},
-        "split_roles": {"train": "scaling, drops, head fit", "val": "joint epoch selection",
+        "primary_metric": dc.PRIMARY,
+        "psth_r2": "secondary, point estimate only (no CI), reported with its cell sizes",
+        "split_roles": {"train": "scaling, drops, head fit, null predictor",
+                        "val": "joint epoch selection (null-normalized score)",
                         "test": "metrics, once, joint epoch only"},
         "metrics": metrics, "joint_epoch": selection["joint_epoch"],
         "checks": [{"ok": ok, "name": nm, "detail": d} for ok, nm, d in log],

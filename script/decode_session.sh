@@ -8,8 +8,9 @@
 #          -J dec-${EID:0:8} -o $L/dec-%j.out -e $L/dec-%j.err \
 #          script/decode_session.sh EID
 #
-# Outputs: ${RESULTS_ROOT}/decoding/{probe,baseline}/<eid>/ -- both refuse to
-# overwrite. --time comes from the canary; the default is a canary ceiling.
+# Outputs: ${RESULTS_ROOT}/${DECODE_DIR:-decoding}/{probe,baseline}/<eid>/ --
+# both refuse to overwrite; set DECODE_DIR to write a new version beside an
+# old one. --time comes from the canary; the default is a canary ceiling.
 
 #SBATCH --job-name=decode
 #SBATCH --output=../results_parity/dec-%j.out
@@ -46,8 +47,9 @@ REPO_ROOT="$(find_repo_root)" || { echo "cannot locate the repo root" >&2; exit 
 cd "$REPO_ROOT" || exit 2
 source script/parity_common.sh
 
-PROBE_OUT="${RESULTS_ROOT}/decoding/probe/${EID}"
-BASE_OUT="${RESULTS_ROOT}/decoding/baseline/${EID}"
+DECODE_DIR="${DECODE_DIR:-decoding}"
+PROBE_OUT="${RESULTS_ROOT}/${DECODE_DIR}/probe/${EID}"
+BASE_OUT="${RESULTS_ROOT}/${DECODE_DIR}/baseline/${EID}"
 
 echo "=================================================="
 echo "behaviour decoding   : ${EID}"
@@ -75,7 +77,7 @@ echo; echo "---------- [1/2] frozen-NDT1 probe ----------"
 mkdir -p "$PROBE_OUT" || exit 2
 python script/write_capture_meta.py "$PROBE_OUT" "decode_probe_${EID}" "$EID" 0 \
     --cmd "decode_session.sh $EID" || exit 2
-python script/behavior_decode.py "$EID"
+python script/behavior_decode.py "$EID" --out-root "$(dirname "$PROBE_OUT")"
 rc_probe=$?
 echo "probe exit=${rc_probe}"
 
@@ -84,7 +86,7 @@ echo; echo "---------- [2/2] raw-spike baseline + chance ----------"
 mkdir -p "$BASE_OUT" || exit 2
 python script/write_capture_meta.py "$BASE_OUT" "decode_baseline_${EID}" "$EID" 0 \
     --cmd "decode_session.sh $EID" || exit 2
-python script/decode_baseline.py "$EID"
+python script/decode_baseline.py "$EID" --out-root "$(dirname "$BASE_OUT")"
 rc_base=$?
 echo "baseline exit=${rc_base}"
 

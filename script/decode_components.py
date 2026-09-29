@@ -18,7 +18,9 @@ Component-level parity with NEDS (reference copy: ``neds_scripts/``):
 * metrics -- accuracy and balanced accuracy; PSTH R2 over (block, choice,
   reward) conditions and single-trial R2 over every (trial, bin) entry,
   both unclipped (``eval_utils.py:757-775``). ``subtract_psth`` in NEDS only
-  changes plots, so nothing is subtracted here either.
+  changes plots, so nothing is subtracted here either. Single-trial R2 is
+  PRIMARY for the dynamic targets; PSTH R2 is secondary and reported as a
+  point estimate only, with its condition-cell sizes (see bootstrap_ci).
 
 Deliberate departures (see results/claude/decoding.md):
 
@@ -30,7 +32,9 @@ Deliberate departures (see results/claude/decoding.md):
 * loss reduction is an explicit masked mean per component (CE over valid
   trials, MSE over valid (trial, bin) entries). NEDS divides the static CE by
   the time-expanded mask count (B x T), an implicit 1/T weight not carried
-  over.
+  over. Training minimises the unweighted sum; checkpoint SELECTION uses
+  ``selection_score``, the equally weighted mean of each target's val loss
+  divided by its fixed, train-derived null val loss (``null_val_losses``).
 """
 
 import numpy as np
@@ -49,6 +53,9 @@ LOOKUP = {"choice": {-1.0: 0, 1.0: 1}, "block": {0.2: 0, 0.5: 1, 0.8: 2}}
 MAX_INVALID_FRAC = 0.3
 # NEDS plot_psth conditions on these trial variables (eval_utils.py:264-270).
 PSTH_CONDITIONS = ("block", "choice", "reward")
+# Primary metric per target (dynamic: single-trial R2; PSTH R2 is secondary).
+PRIMARY = {"choice": "acc", "block": "balanced_acc",
+           "wheel-speed": "r2_trial", "whisker-motion-energy": "r2_trial"}
 
 
 # --------------------------------------------------------------------------
@@ -266,20 +273,42 @@ def evaluable(name, target):
     return mask if name in STATIC else mask.all(axis=1)
 
 
+def condition_cells(conditions):
+    """Sizes of the observed (block, choice, reward) cells PSTH R2 averages over."""
+    if len(conditions) == 0:
+        return {"n_cells": 0, "min_cell": 0, "cell_sizes": []}
+    _, counts = np.unique(conditions, axis=0, return_counts=True)
+    return {"n_cells": int(len(counts)), "min_cell": int(counts.min()),
+            "cell_sizes": sorted(int(c) for c in counts)}
+
+
 def metrics_for(name, target, pred, conditions):
     rows = evaluable(name, target)
-    out = {"n_eval": int(rows.sum()), "n_excluded": int((~rows).sum())}
+    out = {"n_eval": int(rows.sum()), "n_excluded": int((~rows).sum()),
+           "primary": PRIMARY[name]}
     if rows.sum() == 0:
         return out
     if name in STATIC:
         out.update(static_metrics(target["y"][rows], np.asarray(pred)[rows]))
     else:
         out.update(dynamic_metrics(target["y"][rows], np.asarray(pred)[rows], conditions[rows]))
+        out["psth_cells"] = condition_cells(conditions[rows])
     return out
 
 
+# PSTH R2 gets NO interval. Trial resampling (plain or stratified within the
+# (block, choice, reward) cells) duplicates trials inside cells, which makes
+# both mean traces noisier and pulls resampled PSTH R2 below the estimate; on
+# synthetic data the percentile, bias-corrected and (except at low noise with
+# no small cells) basic intervals all had ~0% coverage, and the estimate
+# itself is biased low by trial noise and small cells. Decision 2026-09-29:
+# point estimate only, reported with its cell sizes. See decoding.md.
+NO_CI = ("r2_psth",)
+
+
 def bootstrap_ci(name, target, pred, conditions, n_boot=1000, seed=0):
-    """95% percentile CI per metric from resampling evaluable test trials."""
+    """95% percentile CI from resampling evaluable test trials, for every
+    metric except those in NO_CI (PSTH R2)."""
     rows = np.flatnonzero(evaluable(name, target))
     if len(rows) < 2:
         return {}
@@ -291,9 +320,11 @@ def bootstrap_ci(name, target, pred, conditions, n_boot=1000, seed=0):
         if name in STATIC:
             m = static_metrics(y[idx], p[idx])
         else:
-            m = dynamic_metrics(y[idx], p[idx], c[idx])
+            # trial R2 only; PSTH R2 (NO_CI) is not resampled at all
+            m = {"r2_trial": dynamic_metrics(y[idx], p[idx], c[idx])["r2_trial"]}
         for k, v in m.items():
-            draws.setdefault(k, []).append(v)
+            if k not in NO_CI:
+                draws.setdefault(k, []).append(v)
     return {k: [float(np.nanpercentile(v, 2.5)), float(np.nanpercentile(v, 97.5))]
             for k, v in draws.items()}
 
@@ -311,3 +342,35 @@ def chance_predictions(name, train_target, n_test):
     y, m = train_target["y"], train_target["mask"]
     mean = np.where(m.any(0), (y * m).sum(0) / np.maximum(m.sum(0), 1), 0.0)
     return np.tile(mean, (n_test, 1)), {"train_mean_trace": mean.tolist()}
+
+
+def null_val_losses(train_targets, val_targets):
+    """Fixed, train-derived null loss on val, per active target, with the same
+    masked-mean reduction as component_loss.
+
+    static:  CE of the train class-frequency distribution (add-one smoothed so
+             a class unseen in train cannot make the null infinite);
+    dynamic: MSE of the per-bin train mean trace (the chance predictor).
+    Computed once, before training; depends on train for the predictor and
+    on val only as the data it is scored on.
+    """
+    out = {}
+    for name, v in val_targets.items():
+        tr = train_targets[name]
+        if not v["mask"].any():
+            continue
+        if name in STATIC:
+            counts = np.bincount(tr["y"][tr["mask"]], minlength=N_CLASSES[name]) + 1.0
+            prior = counts / counts.sum()
+            out[name] = float(-np.log(prior[v["y"][v["mask"]]]).mean())
+        else:
+            mean, _ = chance_predictions(name, tr, 1)
+            err = (mean[0][None, :] - v["y"]) ** 2
+            out[name] = float(err[v["mask"]].mean())
+    return out
+
+
+def selection_score(val_losses, null_losses):
+    """Equally weighted mean over targets of val_loss / null_val_loss."""
+    names = [n for n in val_losses if n in null_losses]
+    return float(np.mean([val_losses[n] / null_losses[n] for n in names]))

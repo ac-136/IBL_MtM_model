@@ -240,15 +240,57 @@ def main():
     argmins = {n: int(np.argmin(hist0[f"val_{n}"])) for n in names}
     check("selection: per-target epochs == argmin of logged val component loss",
           all(sel0["per_target_diagnostic"][n]["own_best_epoch"] == argmins[n] for n in names))
-    check("selection: joint epoch == argmin of logged val total", sel0["joint_epoch"]
-          == int(np.argmin(hist0["val_total"])))
+    null = dc.null_val_losses(prep["targets"]["train"], prep["targets"]["val"])
+    scores = [dc.selection_score({n: hist0[f"val_{n}"][e] for n in names}, null)
+              for e in range(len(hist0["val_total"]))]
+    check("selection: joint epoch == argmin of the logged null-normalized val score",
+          sel0["joint_epoch"] == int(np.argmin(scores))
+          and np.allclose(scores, hist0["val_selection_score"], rtol=0, atol=1e-12))
+    check("selection: score is the equally weighted mean of val_loss/null (not the val total)",
+          np.isclose(sel0["joint_score"],
+                     np.mean([hist0[f"val_{n}"][sel0["joint_epoch"]] / null[n] for n in names])))
     tv = {n: {"y": torch.as_tensor(t["y"], dtype=torch.long if n in dc.STATIC else torch.float32),
               "mask": torch.as_tensor(t["mask"])} for n, t in prep["targets"]["val"].items()}
     heads0.eval()
     with torch.no_grad():
-        vt, _ = dc.total_loss(heads0, feats["val"], tv)
-    check("selection: returned heads ARE the joint-epoch heads (val total reproduces)",
-          np.isclose(float(vt), sel0["joint_val_total"], rtol=0, atol=1e-6))
+        _, comps = dc.total_loss(heads0, feats["val"], tv)
+    rescored = dc.selection_score({n: float(comps[n][0]) for n in names}, null)
+    check("selection: returned heads ARE the joint-epoch heads (val score reproduces)",
+          np.isclose(rescored, sel0["joint_score"], rtol=0, atol=1e-6))
+
+    # ---------------------------------------------------------- null val losses
+    tr, va = prep["targets"]["train"], prep["targets"]["val"]
+    counts = np.bincount(tr["block"]["y"][tr["block"]["mask"]], minlength=3) + 1.0
+    manual_ce = float(-np.log((counts / counts.sum())[va["block"]["y"][va["block"]["mask"]]]).mean())
+    m = tr["wheel-speed"]["mask"]
+    trace = (tr["wheel-speed"]["y"] * m).sum(0) / m.sum(0)
+    manual_mse = float(((trace[None] - va["wheel-speed"]["y"]) ** 2)[va["wheel-speed"]["mask"]].mean())
+    check("null: static = CE of add-one-smoothed train class prior on val",
+          np.isclose(null["block"], manual_ce, rtol=0, atol=1e-12))
+    check("null: dynamic = MSE of the per-bin train mean trace on val",
+          np.isclose(null["wheel-speed"], manual_mse, rtol=0, atol=1e-12))
+    p_test = dc.prepare_targets(perturbed("test"))
+    check("null: independent of the test split",
+          dc.null_val_losses(p_test["targets"]["train"], p_test["targets"]["val"]) == null)
+    vl = {n: 2.0 * null[n] for n in null}
+    scaled_null = dict(null, **{"wheel-speed": null["wheel-speed"] * 1e3})
+    vl_scaled = dict(vl, **{"wheel-speed": vl["wheel-speed"] * 1e3})
+    check("null: score is invariant to a target's loss scale (equal weighting after normalization)",
+          np.isclose(dc.selection_score(vl, null), dc.selection_score(vl_scaled, scaled_null))
+          and np.isclose(dc.selection_score(vl, null), 2.0))
+
+    # ---------------------------------------------------------- PSTH R2: point only
+    pt = prep["targets"]["test"]["wheel-speed"]
+    cond = np.stack([raw["test"][c] for c in dc.PSTH_CONDITIONS], axis=1)
+    pr = np.where(pt["mask"], pt["y"], 0.0) + 0.1
+    mets = dc.metrics_for("wheel-speed", pt, pr, cond)
+    ci = dc.bootstrap_ci("wheel-speed", pt, pr, cond, n_boot=50)
+    check("psth: r2_psth reported as a point estimate with cell sizes, no CI; r2_trial has a CI",
+          "r2_psth" in mets and "psth_cells" in mets and "r2_psth" not in ci and "r2_trial" in ci)
+    check("primary: trial R2 for dynamic targets, acc / balanced acc for static",
+          mets["primary"] == "r2_trial"
+          and dc.metrics_for("block", prep["targets"]["test"]["block"],
+                             prep["targets"]["test"]["block"]["y"], cond)["primary"] == "balanced_acc")
     check("optimizer holds only head parameters",
           any(ok and name.startswith("n.") for ok, name, _ in log0))
 

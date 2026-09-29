@@ -153,6 +153,8 @@ def main():
     (out / "metrics.json").write_text(json.dumps({
         "eid": eid, "data_root": args.data_root, "seed": args.seed,
         "inputs": "raw binned spikes, flattened (T x N), unnormalised",
+        "primary_metric": dc.PRIMARY,
+        "psth_r2": "secondary, point estimate only (no CI), reported with its cell sizes",
         "split_roles": {"train": "fit, scaling, drops, chance", "val": "C/alpha selection",
                         "test": "metrics, once"},
         "targets": prepared["info"], "results": results}, indent=2))
