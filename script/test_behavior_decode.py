@@ -294,6 +294,104 @@ def main():
     check("optimizer holds only head parameters",
           any(ok and name.startswith("n.") for ok, name, _ in log0))
 
+    # ---------------------------------------------------------- diagnostics: paired deltas
+    r2 = np.random.default_rng(5)
+    yb = r2.integers(0, 3, 90)
+    tgt_b = {"y": yb, "mask": np.ones(90, bool)}
+    pb, lb = np.where(r2.random(90) < 0.7, yb, r2.integers(0, 3, 90)), r2.integers(0, 3, 90)
+    nb = np.zeros(90, int)
+    fixed = [np.arange(90), r2.integers(0, 90, 90), r2.integers(0, 90, 90)]
+    d = dc.paired_delta_ci("block", tgt_b, pb, lb, nb, draws=fixed)
+    from sklearn.metrics import balanced_accuracy_score as bas
+    manual = [(bas(yb[i], pb[i]) - bas(yb[i], nb[i]), bas(yb[i], pb[i]) - bas(yb[i], lb[i])) for i in fixed]
+    check("delta: each fixed draw's paired deltas == direct computation on those indices",
+          np.allclose(d["draw_deltas"]["null"], [m[0] for m in manual], rtol=0, atol=1e-12)
+          and np.allclose(d["draw_deltas"]["linear"], [m[1] for m in manual], rtol=0, atol=1e-12))
+    check("delta: identity draw reproduces the point deltas",
+          np.isclose(d["draw_deltas"]["null"][0], d["delta_null"])
+          and np.isclose(d["draw_deltas"]["linear"][0], d["delta_linear"]))
+    yd = r2.normal(size=(40, 100)); tgt_d = {"y": yd, "mask": np.ones((40, 100), bool)}
+    pdn, ldn, ndn = yd + 0.3 * r2.normal(size=yd.shape), yd + 0.5 * r2.normal(size=yd.shape), np.zeros_like(yd)
+    fx = [r2.integers(0, 40, 40) for _ in range(3)]
+    dd = dc.paired_delta_ci("wheel-speed", tgt_d, pdn, ldn, ndn, draws=fx)
+    r2t = lambda a, b: float(r2_score_sklearn(a.reshape(-1), b.reshape(-1)))
+    check("delta: trial-R2 deltas use the same indices for all three models",
+          np.allclose(dd["draw_deltas"]["linear"], [r2t(yd[i], pdn[i]) - r2t(yd[i], ldn[i]) for i in fx],
+                      rtol=0, atol=1e-10))
+    draws_b = dc.delta_draws("block", yb, 20, np.random.default_rng(0))
+    check("delta: block draws are class-stratified (every class count preserved)",
+          all(np.array_equal(np.bincount(yb[i], minlength=3), np.bincount(yb, minlength=3)) for i in draws_b))
+    yc = r2.integers(0, 2, 90)
+    draws_c = dc.delta_draws("choice", yc, 50, np.random.default_rng(0))
+    check("delta: choice / dynamic draws are ordinary n-with-replacement",
+          all(len(i) == 90 for i in draws_c)
+          and any(not np.array_equal(np.bincount(yc[i], minlength=2), np.bincount(yc, minlength=2))
+                  for i in draws_c))
+    check("delta: block scheme labelled class-stratified, choice ordinary",
+          d["scheme"] == "class-stratified"
+          and dc.paired_delta_ci("choice", {"y": yc, "mask": np.ones(90, bool)}, yc, yc, yc,
+                                 n_boot=5)["scheme"] == "ordinary")
+
+    # ---------------------------------------------------------- diagnostics: trial selection
+    ys = r2.normal(size=(60, 100)) + np.linspace(0, 5, 60)[:, None]
+    ms = np.ones((60, 100), bool)
+    ms[3] = False
+    ms[10, :50] = False
+    ch, full = dc.select_trials(ys, ms)
+    act = {i: ys[i][ms[i]].mean() for i in range(60) if ms[i].any()}
+    cand = sorted([i for i in range(60) if ms[i].all()], key=lambda i: act[i])
+    bins = np.array_split(np.array(cand), 8)
+    check("select: 8 distinct fully valid trials, median-ranked one per mean-activity bin",
+          len(set(ch.tolist())) == 8 and full.all()
+          and ch.tolist() == [int(b[(len(b) - 1) // 2]) for b in bins])
+    check("select: deterministic and a function of GT/mask only",
+          np.array_equal(ch, dc.select_trials(ys.copy(), ms.copy())[0]))
+    ms2 = np.zeros((10, 100), bool); ms2[:5] = True; ms2[5:, :30] = True
+    ch2, full2 = dc.select_trials(r2.normal(size=(10, 100)), ms2)
+    check("select: partially valid trials used only when fewer than 8 fully valid",
+          len(ch2) == 8 and full2.sum() == 5 and set(ch2[full2].tolist()) == set(range(5)))
+    yp = np.array([[1.0, 5.0, np.nan], [2.0, 2.0, 2.0]])
+    mp = np.isfinite(yp)
+    mp2 = np.zeros((2, 3), bool); mp2[0, :2] = True
+    check("select: mean activity is over valid bins only",
+          dc.select_trials(yp, mp2, k=2)[0].tolist() == [0] and
+          dc.select_trials(np.nan_to_num(yp, nan=100.0), mp, k=2)[0].tolist() == [1, 0])
+
+    # ---------------------------------------------------------- diagnostics: confusion semantics
+    yy = r2.integers(0, 3, 200); pp = np.where(r2.random(200) < 0.6, yy, r2.integers(0, 3, 200))
+    counts, norm = dc.row_normalised_confusion(yy, pp, 3)
+    check("confusion: rows are true classes; diagonal mean == balanced accuracy",
+          np.array_equal(counts.sum(1), np.bincount(yy, minlength=3))
+          and np.isclose(np.diag(norm).mean(), bas(yy, pp), rtol=0, atol=1e-12))
+    neds_labels = neds_literal(NEDS / "eval_utils.py", "var_value2label")
+
+    def labels_match(class_names):
+        ok = True
+        for name in ("choice", "block"):
+            for raw_v, cls in dc.LOOKUP[name].items():
+                neds = neds_labels[name][(raw_v,)]
+                ours = class_names[name][cls]
+                ok &= (ours.split(" ")[0] == neds)
+        return ok
+    check("confusion: class labels map through LOOKUP and match NEDS var_value2label",
+          labels_match(dc.CLASS_NAMES)
+          and dc.CLASS_NAMES["choice"] == {0: "right (-1)", 1: "left (+1)"}
+          and dc.CLASS_NAMES["block"] == {0: "p(left)=0.2", 1: "p(left)=0.5", 2: "p(left)=0.8"})
+    swapped = {"choice": {0: dc.CLASS_NAMES["choice"][1], 1: dc.CLASS_NAMES["choice"][0]},
+               "block": dc.CLASS_NAMES["block"]}
+    check("confusion: a swapped choice mapping is caught", not labels_match(swapped))
+
+    # ---------------------------------------------------------- diagnostics: baseline refit
+    Xr = {s: r2.poisson(0.3, (len(raw[s]["choice"]), 200)).astype(np.float32) for s in dc.SPLITS}
+    pa, sa = db.fit_static("block", Xr, prep["targets"], 42)
+    pb2, sb = db.fit_static("block", Xr, prep["targets"], 42)
+    da, ra = db.fit_dynamic("wheel-speed", Xr, prep["targets"])
+    db2, rb = db.fit_dynamic("wheel-speed", Xr, prep["targets"])
+    check("refit: categorical predictions and chosen C identical across refits",
+          np.array_equal(pa, pb2) and sa["chosen"] == sb["chosen"])
+    check("refit: continuous predictions within audit tolerance, same alpha",
+          np.allclose(da, db2, rtol=1e-7, atol=0) and ra["chosen"]["alpha"] == rb["chosen"]["alpha"])
+
     # ---------------------------------------------------------- shared preprocessing
     src = (REPO / "script" / "decode_baseline.py").read_text()
     check("baseline uses the probe's read_behaviour and dc.prepare_targets",

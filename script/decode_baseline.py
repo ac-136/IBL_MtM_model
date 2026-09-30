@@ -129,13 +129,15 @@ def main():
         assert X[s].shape[0] == len(raw[s]["choice"]), f"{s}: spikes/behaviour row mismatch"
     cond = np.stack([raw["test"][c] for c in dc.PSTH_CONDITIONS], axis=1)
 
-    results = {}
+    results, saved = {}, {"conditions": cond}
     for name in dc.active_targets(prepared):
         if name in dc.STATIC:
             pred, sel = fit_static(name, X, tg, args.seed)
         else:
             pred, sel = fit_dynamic(name, X, tg)
         chance_pred, chance_info = dc.chance_predictions(name, tg["train"][name], len(pred))
+        saved.update({f"{name}_pred": pred, f"{name}_chance_pred": chance_pred,
+                      f"{name}_y": tg["test"][name]["y"], f"{name}_mask": tg["test"][name]["mask"]})
         results[name] = {
             "linear": {**dc.metrics_for(name, tg["test"][name], pred, cond),
                        "ci95": dc.bootstrap_ci(name, tg["test"][name], pred, cond),
@@ -150,6 +152,7 @@ def main():
               + " | chance " + " ".join(f"{k} {ch.get(k, float('nan')):+.4f}" for k in keys)
               + f"  [{sel['chosen']}]")
 
+    np.savez(out / "preds.npz", **saved)   # test split, same keys as the probe's
     (out / "metrics.json").write_text(json.dumps({
         "eid": eid, "data_root": args.data_root, "seed": args.seed,
         "inputs": "raw binned spikes, flattened (T x N), unnormalised",

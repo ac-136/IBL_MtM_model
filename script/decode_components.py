@@ -374,3 +374,99 @@ def selection_score(val_losses, null_losses):
     """Equally weighted mean over targets of val_loss / null_val_loss."""
     names = [n for n in val_losses if n in null_losses]
     return float(np.mean([val_losses[n] / null_losses[n] for n in names]))
+
+
+# --------------------------------------------------------------------------
+# Diagnostics: paired deltas, trial selection, class labels
+# --------------------------------------------------------------------------
+
+# Human-readable class names, inverted from LOOKUP (NEDS var_value2label:
+# choice -1 right / +1 left; block is p(left)).
+CLASS_NAMES = {"choice": {LOOKUP["choice"][-1.0]: "right (-1)", LOOKUP["choice"][1.0]: "left (+1)"},
+               "block": {LOOKUP["block"][v]: f"p(left)={v}" for v in (0.2, 0.5, 0.8)}}
+
+
+def primary_value(name, y, pred):
+    """The target's PRIMARY metric on already-evaluable rows."""
+    if name in STATIC:
+        return static_metrics(y, pred)[PRIMARY[name]]
+    _, _, compute_R2_main = _ndt_r2_helpers()
+    return float(compute_R2_main(y.reshape(-1, 1), np.asarray(pred).reshape(-1, 1), clip=False)[0])
+
+
+def delta_draws(name, y_eval, n_boot, rng):
+    """Resample indices into the evaluable rows. Block (balanced accuracy):
+    class-stratified, each true class resampled within itself at its own count.
+    Everything else: ordinary n-with-replacement."""
+    n = len(y_eval)
+    if name == "block":
+        groups = [np.flatnonzero(y_eval == k) for k in np.unique(y_eval)]
+        return [np.concatenate([rng.choice(g, len(g), replace=True) for g in groups])
+                for _ in range(n_boot)]
+    return [rng.integers(0, n, n) for _ in range(n_boot)]
+
+
+def paired_delta_ci(name, target, probe_pred, linear_pred, null_pred,
+                    n_boot=1000, seed=0, draws=None):
+    """Paired bootstrap of probe - null and probe - linear on the primary metric.
+
+    The SAME resampled evaluable test trials score all three models on every
+    draw. ``draws`` (list of index arrays into the evaluable rows) overrides
+    the generated ones, for tests. Returns point deltas, 95% percentile CIs and
+    the per-draw deltas' count.
+    """
+    rows = np.flatnonzero(evaluable(name, target))
+    y = target["y"][rows]
+    preds = {k: np.asarray(v)[rows] for k, v in
+             (("probe", probe_pred), ("linear", linear_pred), ("null", null_pred))}
+    point = {m: primary_value(name, y, p) for m, p in preds.items()}
+    out = {"metric": PRIMARY[name], "point": point,
+           "delta_null": point["probe"] - point["null"],
+           "delta_linear": point["probe"] - point["linear"],
+           "scheme": "class-stratified" if name == "block" else "ordinary",
+           "n_eval": int(len(rows))}
+    if len(rows) < 2:
+        return out
+    if draws is None:
+        draws = delta_draws(name, y, n_boot, np.random.default_rng(seed))
+    dn, dl = [], []
+    for idx in draws:
+        v = {m: primary_value(name, y[idx], p[idx]) for m, p in preds.items()}
+        dn.append(v["probe"] - v["null"])
+        dl.append(v["probe"] - v["linear"])
+    out["delta_null_ci"] = [float(np.nanpercentile(dn, 2.5)), float(np.nanpercentile(dn, 97.5))]
+    out["delta_linear_ci"] = [float(np.nanpercentile(dl, 2.5)), float(np.nanpercentile(dl, 97.5))]
+    out["draw_deltas"] = {"null": dn, "linear": dl}
+    out["n_boot"] = len(draws)
+    return out
+
+
+def select_trials(y, mask, k=8):
+    """Deterministic GT-stratified trials for display; blind to predictions.
+
+    Candidates are fully valid trials (every bin finite); only if fewer than k
+    exist are partially valid trials added. Mean activity is the mean over a
+    trial's valid bins. Candidates are ranked by it, split into k
+    equal-frequency bins, and the median-ranked trial of each bin is taken.
+    Returns (trial indices, fully_valid flags).
+    """
+    mask = np.asarray(mask, dtype=bool)
+    full = np.flatnonzero(mask.all(axis=1))
+    partial = np.flatnonzero(mask.any(axis=1) & ~mask.all(axis=1))
+    cand = full if len(full) >= k else np.concatenate([full, partial])
+    if len(cand) == 0:
+        return np.array([], dtype=int), np.array([], dtype=bool)
+    act = np.array([np.asarray(y)[i][mask[i]].mean() for i in cand])
+    order = cand[np.argsort(act, kind="stable")]
+    bins = np.array_split(order, min(k, len(order)))
+    chosen = np.array([b[(len(b) - 1) // 2] for b in bins], dtype=int)
+    return chosen, mask[chosen].all(axis=1)
+
+
+def row_normalised_confusion(y, pred, n_classes):
+    """(counts, row-normalised) confusion; rows are TRUE classes."""
+    counts = np.zeros((n_classes, n_classes), dtype=int)
+    for t, p in zip(np.asarray(y), np.asarray(pred)):
+        counts[int(t), int(p)] += 1
+    rows = counts.sum(axis=1, keepdims=True)
+    return counts, np.divide(counts, rows, out=np.zeros_like(counts, dtype=float), where=rows > 0)
