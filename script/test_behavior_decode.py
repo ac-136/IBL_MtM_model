@@ -388,6 +388,86 @@ def main():
     check("refit: continuous predictions within audit tolerance, same alpha",
           np.allclose(da, db2, rtol=1e-7, atol=0) and ra["chosen"]["alpha"] == rb["chosen"]["alpha"])
 
+    # ---------------------------------------------------------- aggregate: states and triggers
+    import decode_aggregate as da
+    check("aggregate: CI states are exclusive and exhaustive at the boundaries",
+          da.ci_state([0.01, 0.2]) == "above" and da.ci_state([0.0, 0.2]) == "uncertain"
+          and da.ci_state([-0.1, 0.0]) == "at/below" and da.ci_state([0.0, 0.0]) == "at/below"
+          and da.ci_state([-0.1, 0.05]) == "uncertain" and da.ci_state([-0.3, -0.1]) == "at/below")
+
+    def d_entry(lo, hi, point=0.1):
+        return {"point": {"probe": 0.5, "linear": 0.4, "null": 0.3},
+                "delta_null": point, "delta_linear": point,
+                "delta_null_ci": [lo, hi], "delta_linear_ci": [lo, hi]}
+
+    def mk(eid, ci_by_target, dropped=(), band=">0", block=None, audit=True):
+        return {"eid": eid, "dropped": {t: "dropped on train" for t in dropped},
+                "deltas": {t: d_entry(*ci) for t, ci in ci_by_target.items()},
+                "cosmooth_band": band, "block_control": block, "audit_ok": audit}
+
+    below, unc = (-0.2, -0.01), (-0.1, 0.1)
+    four_below = {t: below for t in dc.TARGETS}
+    rows = [mk("a" * 8, four_below), mk("b" * 8, {t: unc for t in dc.TARGETS})]
+    t3 = da.trigger_contradiction(rows)
+    check("trigger 3: exactly 50% at/below does not fire", t3["eligible"] == 2 and not t3["fires"])
+    rows.append(mk("c" * 8, {**{t: below for t in dc.TARGETS[:3]}}, dropped=(dc.TARGETS[3],)))
+    t3 = da.trigger_contradiction(rows)
+    check("trigger 3: >50% fires; a dropped target leaves 3 available and still counts",
+          t3["eligible"] == 3 and t3["hits"] == ["a" * 8, "c" * 8] and t3["fires"])
+    rows2 = [mk("d" * 8, {t: below for t in dc.TARGETS[:2]}, dropped=dc.TARGETS[2:]),
+             mk("e" * 8, four_below, band="~0")]
+    check("trigger 3: < 3 available targets or band not >0 -> not eligible",
+          da.trigger_contradiction(rows2)["eligible"] == 0
+          and not da.trigger_contradiction(rows2)["fires"])
+    check("trigger 3: 'uncertain' never counts toward firing",
+          not da.trigger_contradiction([mk("f" * 8, {t: unc for t in dc.TARGETS})] * 3)["fires"])
+
+    blk = lambda n, pos, probe: {"n_half_test": n, "recall_half_position": pos,  # noqa: E731
+                                 "recall_half_probe": probe}
+    r1 = [mk("g" * 8, {}, block=blk(10, 0.9, 0.8)), mk("h" * 8, {}, block=blk(9, 1.0, 0.1)),
+          mk("i" * 8, {}, block=blk(15, 0.5, 0.9))]
+    t1 = da.trigger_block(r1)
+    check("trigger 1: 9 half-block trials excluded, 10 eligible; ties count; 1/2 = 50% does not fire",
+          t1["eligible"] == 2 and t1["excluded"] == ["h" * 8] and t1["hits"] == ["g" * 8]
+          and not t1["fires"])
+    r1.append(mk("j" * 8, {}, block=blk(12, 0.7, 0.7)))
+    r1.append(mk("k" * 8, {}, dropped=("block",), block=blk(20, 1.0, 0.0)))
+    t1 = da.trigger_block(r1)
+    check("trigger 1: equal recall is a hit; dropped block excluded; 2/3 fires",
+          t1["eligible"] == 3 and "k" * 8 in t1["excluded"] and t1["fires"])
+
+    ok_row = mk("l" * 8, {t: unc for t in dc.TARGETS[:3]}, dropped=(dc.TARGETS[3],))
+    check("trigger 2: a dropped target never counts as a failure",
+          not da.trigger_tooling([ok_row])["fires"])
+    nan_row = mk("m" * 8, {t: unc for t in dc.TARGETS})
+    nan_row["deltas"][dc.TARGETS[1]]["point"]["probe"] = float("nan")
+    check("trigger 2: non-finite primary metric on a non-dropped target fires; failed audit fires",
+          da.trigger_tooling([nan_row])["fires"]
+          and da.trigger_tooling([mk("n" * 8, {t: unc for t in dc.TARGETS}, audit=False)])["fires"])
+
+    tt = da.target_table([ok_row, nan_row, mk("o" * 8, {t: below for t in dc.TARGETS})],
+                         dc.TARGETS[3])
+    check("aggregate: eligible n = N - dropped; status counts sum to eligible n",
+          tt["N"] == 3 and tt["dropped"] == 1 and tt["eligible"] == 2
+          and sum(tt["null_states"].values()) == tt["eligible"]
+          and sum(tt["linear_states"].values()) == tt["eligible"])
+
+    # trial position (splits.npz) is in parquet row order: the parquet choice of
+    # every row equals the IBL trial table's choice at that row's trial index
+    import pandas as pd, pyarrow.parquet as pq
+    E = "71e55bfe-5a3a-4cba-bdc7-f085140d798e"
+    sp = np.load(f"{da.DATA_ROOT}/{E}/splits.npz")
+    trials = pd.read_pickle(f"/work/nvme/beml/ac136/LFP_FM/data/processed_wheel/{E}/trials.pkl")
+    aligned = True
+    for s in dc.SPLITS:
+        ch = np.array([v[0] for v in pq.read_table(f"{da.DATA_ROOT}/{E}/data/{s}.parquet",
+                                                   columns=["choice"]).column(0).to_pylist()])
+        aligned &= np.array_equal(ch, trials["choice"].to_numpy()[sp[f"{s}_trial_indices"]])
+    check("aggregate: splits.npz trial indices follow parquet row order (real session)", aligned)
+    yb = np.array([0, 1, 1, 2, 1, 0]); mb = np.array([1, 1, 1, 1, 0, 1], bool)
+    check("aggregate: half_recall uses valid p(left)=0.5 test trials only",
+          da.half_recall(yb, np.array([0, 1, 0, 2, 1, 0]), mb) == 0.5)
+
     # ---------------------------------------------------------- shared preprocessing
     src = (REPO / "script" / "decode_baseline.py").read_text()
     check("baseline uses the probe's read_behaviour and dc.prepare_targets",
