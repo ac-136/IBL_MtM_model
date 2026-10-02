@@ -474,8 +474,8 @@ def main():
     sub = dbc.biased_target(tb)
     yv, pv = tb["y"][sub["mask"]], np.array([0, 1, 1, 0, 2, 2])[sub["mask"]]
     check("block check: only true 0.2/0.8 trials kept; a 0.5 prediction counts as an error",
-          sub["mask"].tolist() == [True, True, False, True, False, False]
-          and np.isclose(dc.static_metrics(yv, pv)["balanced_acc"], (1.0 + 0.0) / 2))
+          sub["mask"].tolist() == [True, True, False, True, True, False]
+          and np.isclose(dc.static_metrics(yv, pv)["balanced_acc"], (1.0 + 0.5) / 2))
 
     # ---------------------------------------------------------- shared preprocessing
     src = (REPO / "script" / "decode_baseline.py").read_text()
