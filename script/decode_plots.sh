@@ -5,11 +5,12 @@
 #   cd /projects/beml/ac136/ndt-decoding              # detached, pinned
 #   L=/projects/beml/ac136/IBL_MtM_model/results_parity
 #   sbatch --export=ALL,EXPECT_SHA=$(git rev-parse HEAD) \
-#          -o $L/decplot-%j.out -e $L/decplot-%j.err script/decode_plots.sh [DIR] [--only static]
+#          -o $L/decplot-%j.out -e $L/decplot-%j.err script/decode_plots.sh [DIR] [--only static|summary]
 #
 # DIR defaults to decoding_v2. Writes ${RESULTS_ROOT}/DIR/plots/<eid>/; each
-# session refuses to overwrite, except with --only static, which regenerates
-# just choice_confusion.png / block_recall.png. Exit 1 if any session fails.
+# session refuses to overwrite, except with --only, which regenerates just
+# choice_confusion.png / block_recall.png (static) or decoding_summary.png
+# (summary). Exit 1 if any session fails.
 
 #SBATCH --job-name=decode-plots
 #SBATCH --output=../results_parity/decplot-%j.out

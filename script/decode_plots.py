@@ -4,9 +4,9 @@
     python script/decode_plots.py EID [--dir decoding_v2]
 
 Writes to ${RESULTS}/<dir>/plots/<eid>/:
-  decoding_summary.png   null / probe / linear per primary metric, and the two
-                         paired deltas (probe - null, probe - linear) with 95% CIs
-                         -- the only uncertainty shown in any plot
+  decoding_summary.png   null / probe / linear per primary metric (four panels;
+                         header: eid and cohort). The paired deltas and their CIs
+                         are in plot_audit.json and the GT/pred titles
   wheel_gt_pred.png      8 GT-stratified test trials: GT, probe, raw-spike linear
   wme_gt_pred.png
   choice_confusion.png   row-normalised 2x2 confusion, probe | linear
@@ -119,15 +119,24 @@ def run_audits(eid, probe_m, probe_p, base_m, tg, cond, X):
     return audit, linear
 
 
-def plot_summary(path, eid, deltas, dropped, title):
+def session_cohort(eid):
+    """'BWM' or 'RS', from the learnability manifest, else the pilot sources."""
+    import stage3_preflight as pf
+    manifest = json.loads((REPO / "script" / "learnability_manifest.json").read_text())
+    cohort = {s["eid"]: s["cohort"] for s in manifest["sessions"]}.get(eid)
+    if cohort is None and eid in pf.SOURCES:
+        cohort = pf.SOURCES[eid][0]
+    return (cohort or "unknown").upper()
+
+
+def plot_summary(path, eid, deltas, dropped):
+    """Four panels, one per primary metric: Null, Probe and Linear as points.
+    Header: the session eid and its cohort only."""
     rows = list(dc.TARGETS)
-    fig, axes = plt.subplots(len(rows), 2, figsize=(12, 2.1 * len(rows)),
-                             gridspec_kw={"width_ratios": [1.15, 1]})
-    for r, n in enumerate(rows):
-        ax_v, ax_d = axes[r]
+    fig, axes = plt.subplots(len(rows), 1, figsize=(7.5, 2.1 * len(rows)))
+    for ax_v, n in zip(axes, rows):
         if n in dropped:
-            for ax in (ax_v, ax_d):
-                ax.set_facecolor("#eeeeee"); ax.set_xticks([]); ax.set_yticks([])
+            ax_v.set_facecolor("#eeeeee"); ax_v.set_xticks([]); ax_v.set_yticks([])
             ax_v.text(0.5, 0.5, f"{LABEL[n]}: DROPPED on train\n{dropped[n]}",
                       ha="center", va="center", transform=ax_v.transAxes, color="#555555")
             continue
@@ -146,26 +155,8 @@ def plot_summary(path, eid, deltas, dropped, title):
         ax_v.set_yticks([2, 1, 0]); ax_v.set_yticklabels([p[0] for p in pts])
         ax_v.set_ylim(-0.6, 2.6)
         ax_v.set_title(LABEL[n], fontsize=10, loc="left")
-
-        items = [("Δ_null", d["delta_null"], d.get("delta_null_ci")),
-                 ("Δ_linear", d["delta_linear"], d.get("delta_linear_ci"))]
-        span = [0.0] + [v for _, v, _ in items] + [c for _, _, ci in items if ci for c in ci]
-        for i, (lab, v, ci) in enumerate(items):
-            y = 1 - i
-            if ci:
-                ax_d.plot(ci, [y, y], color="black", lw=2)
-            ax_d.plot(v, y, "s", ms=7, color="black")
-            ax_d.annotate(f"{lab} = {v:+.3f} {fmt_ci(ci)}", (1.0, y), xycoords=("axes fraction", "data"),
-                          xytext=(-4, 7), textcoords="offset points", ha="right", fontsize=9)
-        ax_d.axvline(0, color="red", lw=1)
-        w = max(abs(min(span)), abs(max(span))) * 1.25 or 0.1
-        ax_d.set_xlim(-w, w)
-        ax_d.set_yticks([1, 0]); ax_d.set_yticklabels(["probe − null", "probe − linear"])
-        ax_d.set_ylim(-0.7, 1.7)
-        ax_d.set_title(f"paired 95% CI ({d['scheme']} bootstrap, n={d['n_eval']})",
-                       fontsize=9, loc="left")
-    fig.suptitle(title, fontsize=10)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.suptitle(f"{eid}  ({session_cohort(eid)})", fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
@@ -292,9 +283,10 @@ def main():
     ap.add_argument("--dir", default="decoding_v2")
     ap.add_argument("--out", default=None)
     ap.add_argument("--data-root", default=DATA_ROOT)
-    ap.add_argument("--only", choices=["static"], default=None,
-                    help="regenerate only choice_confusion.png / block_recall.png in an "
-                         "existing plot dir (audits still run first)")
+    ap.add_argument("--only", choices=["static", "summary"], default=None,
+                    help="regenerate only the class plots (static: choice_confusion.png, "
+                         "block_recall.png) or decoding_summary.png in an existing plot dir "
+                         "(audits still run first)")
     args = ap.parse_args()
     eid = args.eid.removesuffix("_aligned")
     root = RESULTS / args.dir
@@ -336,6 +328,10 @@ def main():
         plot_static(out, eid, tg, probe_p, linear, base_m)
         print(f"wrote class plots to {out}")
         return 0
+    if args.only == "summary":
+        plot_summary(out / "decoding_summary.png", eid, deltas, dropped)
+        print(f"wrote summary to {out}")
+        return 0
 
     sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
@@ -344,7 +340,7 @@ def main():
              f"source {src['origin']} best v{src['format_version']}  |  code {sha}")
     out.mkdir(parents=True, exist_ok=True)
 
-    plot_summary(out / "decoding_summary.png", eid, deltas, dropped, title)
+    plot_summary(out / "decoding_summary.png", eid, deltas, dropped)
     selected = {}
     for n in dc.DYNAMIC:
         if n in deltas:
