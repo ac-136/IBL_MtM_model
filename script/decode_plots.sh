@@ -5,10 +5,11 @@
 #   cd /projects/beml/ac136/ndt-decoding              # detached, pinned
 #   L=/projects/beml/ac136/IBL_MtM_model/results_parity
 #   sbatch --export=ALL,EXPECT_SHA=$(git rev-parse HEAD) \
-#          -o $L/decplot-%j.out -e $L/decplot-%j.err script/decode_plots.sh [DIR]
+#          -o $L/decplot-%j.out -e $L/decplot-%j.err script/decode_plots.sh [DIR] [--only static]
 #
 # DIR defaults to decoding_v2. Writes ${RESULTS_ROOT}/DIR/plots/<eid>/; each
-# session refuses to overwrite. Exit 1 if any session fails.
+# session refuses to overwrite, except with --only static, which regenerates
+# just choice_confusion.png / block_recall.png. Exit 1 if any session fails.
 
 #SBATCH --job-name=decode-plots
 #SBATCH --output=../results_parity/decplot-%j.out
@@ -27,6 +28,8 @@ conda activate mtm
 set -u
 
 DIR=${1:-decoding_v2}
+shift $(( $# > 0 ? 1 : 0 ))
+EXTRA=("$@")
 SESSIONS=(71e55bfe-5a3a-4cba-bdc7-f085140d798e 862ade13-53cd-4221-a3fa-dda8643641f2
           4aa1d525-5c7d-4c50-a147-ec53a9014812 b9c205c3-feac-485b-a89d-afc96d9cb280
           5b49aca6-a6f4-4075-931a-617ad64c219c)
@@ -66,7 +69,7 @@ fi
 nfail=0
 for EID in "${SESSIONS[@]}"; do
     echo; echo "---------- ${EID} ----------"
-    python script/decode_plots.py "$EID" --dir "$DIR"
+    python script/decode_plots.py "$EID" --dir "$DIR" ${EXTRA[@]+"${EXTRA[@]}"}
     rc=$?
     echo "${EID:0:8} exit=${rc}"
     [ $rc -eq 0 ] || nfail=$((nfail + 1))

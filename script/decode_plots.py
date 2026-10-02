@@ -9,8 +9,8 @@ Writes to ${RESULTS}/<dir>/plots/<eid>/:
                          -- the only uncertainty shown in any plot
   wheel_gt_pred.png      8 GT-stratified test trials: GT, probe, raw-spike linear
   wme_gt_pred.png
-  choice_confusion.png   row-normalised confusion, probe | linear
-  block_confusion.png
+  choice_confusion.png   row-normalised 2x2 confusion, probe | linear
+  block_recall.png       per-class recall, probe vs linear (mean = balanced acc)
   plot_audit.json        audits, deltas and CIs, selected trials
 
 Nothing is retrained. Probe predictions come from the run's preds.npz. The
@@ -205,44 +205,85 @@ def plot_gt_pred(path, n, tg, probe_pred, linear_pred, d, title):
     return chosen.tolist(), full.tolist()
 
 
-def plot_confusion(path, n, tg, probe_pred, linear_pred, d, chance_metrics, title):
+SIMPLE_CLASS = {"choice": {0: "Right", 1: "Left"},
+                "block": {0: "p(left)=0.2", 1: "p(left)=0.5", 2: "p(left)=0.8"}}
+
+
+def plot_choice_confusion(path, eid, tg, probe_pred, linear_pred, chance_acc):
+    """Two row-normalised 2x2 matrices, Probe | Linear. Rows: true choice."""
+    n = "choice"
     rows = dc.evaluable(n, tg["test"][n])
     y = tg["test"][n]["y"][rows]
-    k = dc.N_CLASSES[n]
-    names = [dc.CLASS_NAMES[n][c] for c in range(k)]
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 5.2))
-    im = None
-    for ax, (lab, pred) in zip(axes, (("Frozen probe", probe_pred), ("Raw-spike linear", linear_pred))):
-        counts, norm = dc.row_normalised_confusion(y, np.asarray(pred)[rows], k)
+    names = [SIMPLE_CLASS[n][c] for c in range(2)]
+    fig, axes = plt.subplots(1, 2, figsize=(8.6, 4.2), constrained_layout=True)
+    accs = {}
+    for j, (ax, (lab, pred)) in enumerate(zip(axes, (("Probe", probe_pred), ("Linear", linear_pred)))):
+        pr = np.asarray(pred)[rows]
+        counts, norm = dc.row_normalised_confusion(y, pr, 2)
+        accs[lab] = dc.static_metrics(y, pr)["acc"]
         im = ax.imshow(norm, vmin=0, vmax=1, cmap="Blues")
-        for a in range(k):
-            for b in range(k):
-                ax.text(b, a, f"{norm[a, b]:.2f}\n({counts[a, b]})", ha="center", va="center",
-                        fontsize=9, color="white" if norm[a, b] > 0.6 else "black")
-        m = dc.static_metrics(y, np.asarray(pred)[rows])
-        ax.set_title(f"{lab}\nacc {m['acc']:.3f} | balanced acc {m['balanced_acc']:.3f}", fontsize=9)
-        ax.set_xticks(range(k)); ax.set_xticklabels(names, fontsize=8)
-        ax.set_yticks(range(k)); ax.set_yticklabels(names, fontsize=8)
-        ax.set_xlabel("predicted"); ax.set_ylabel("true (rows sum to 1)")
-    fig.colorbar(im, ax=axes, shrink=0.8, label="fraction of true class")
-    p = d["point"]
-    per_class = np.bincount(y, minlength=k)
-    masked = int((~tg["test"][n]["mask"]).sum())
-    if n == "choice":
-        head = (f"Choice accuracy (primary): Probe = {p['probe']:.3f}   Linear = {p['linear']:.3f}   "
-                f"Chance = {p['null']:.3f} (train majority; balanced chance 0.500)")
-    else:
-        head = (f"BLOCK BALANCED ACCURACY: Probe = {p['probe']:.3f}   Linear = {p['linear']:.3f}   "
-                f"Chance = {p['null']:.3f}")
-    fig.suptitle(
-        f"{title}\n{head}\n"
-        f"Probe − chance = {d['delta_null']:+.3f} {fmt_ci(d.get('delta_null_ci'))}   "
-        f"Probe − linear = {d['delta_linear']:+.3f} {fmt_ci(d.get('delta_linear_ci'))}\n"
-        f"test n={len(y)}; per true class {dict(zip(names, per_class.tolist()))}"
-        + (f"; {masked} masked (choice = 0)" if n == "choice" and masked else ""),
-        fontsize=9)
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+        for a in range(2):
+            for b in range(2):
+                ax.text(b, a, f"{norm[a, b]:.0%}\n({counts[a, b]})", ha="center", va="center",
+                        fontsize=12, color="white" if norm[a, b] > 0.6 else "black")
+        ax.set_title(lab, fontsize=12)
+        ax.set_xticks([0, 1]); ax.set_xticklabels(names, fontsize=11)
+        ax.set_yticks([0, 1]); ax.set_yticklabels(names if j == 0 else ["", ""], fontsize=11)
+        ax.set_xlabel("Predicted choice", fontsize=11)
+        if j == 0:
+            ax.set_ylabel("True choice", fontsize=11)
+    fig.colorbar(im, ax=axes, shrink=0.75, label="share of true choice")
+    fig.suptitle(f"{eid[:8]}  choice  \u2014  Accuracy: Probe {accs['Probe']:.3f} | "
+                 f"Linear {accs['Linear']:.3f} | Chance {chance_acc:.3f}", fontsize=11)
+    fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def plot_block_recall(path, eid, tg, probe_pred, linear_pred, chance_bal):
+    """Per true block class: Probe vs Linear recall side by side. Balanced
+    accuracy is exactly the mean of each model's three bars."""
+    n = "block"
+    rows = dc.evaluable(n, tg["test"][n])
+    y = tg["test"][n]["y"][rows]
+    counts = np.bincount(y, minlength=3)
+    x = np.arange(3)
+    w = 0.36
+    fig, ax = plt.subplots(figsize=(7.2, 4.4), constrained_layout=True)
+    bal = {}
+    for j, (lab, pred, key) in enumerate((("Probe", probe_pred, "probe"), ("Linear", linear_pred, "linear"))):
+        pr = np.asarray(pred)[rows]
+        rec = np.diag(dc.row_normalised_confusion(y, pr, 3)[1])
+        bal[lab] = dc.static_metrics(y, pr)["balanced_acc"]
+        xs = x + (j - 0.5) * w
+        ax.bar(xs, rec, width=w, color=COLORS[key], label=lab)
+        for xv, v in zip(xs, rec):
+            ax.text(xv, v + 0.015, f"{v:.0%}", ha="center", fontsize=10)
+    ax.axhline(1 / 3, color="black", ls="--", lw=1, label="Chance (1/3)")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{SIMPLE_CLASS[n][c]}\nn={counts[c]}" for c in range(3)], fontsize=11)
+    ax.set_xlabel("True block", fontsize=11)
+    ax.set_ylabel("Recall (share of class decoded correctly)", fontsize=10)
+    ax.set_ylim(0, 1.28)
+    ax.set_yticks(np.linspace(0, 1, 6))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(fontsize=9, loc="upper center", ncol=3, frameon=False)
+    ax.set_title(f"{eid[:8]}  block  \u2014  Balanced accuracy: Probe {bal['Probe']:.3f} | "
+                 f"Linear {bal['Linear']:.3f} | Chance {chance_bal:.3f}", fontsize=11)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def plot_static(out, eid, tg, probe_p, linear, base_m):
+    """choice_confusion.png and block_recall.png (replace any earlier versions)."""
+    if "choice" in linear:
+        plot_choice_confusion(out / "choice_confusion.png", eid, tg, probe_p["choice_pred"],
+                              linear["choice"], base_m["results"]["choice"]["chance"]["acc"])
+    if "block" in linear:
+        plot_block_recall(out / "block_recall.png", eid, tg, probe_p["block_pred"],
+                          linear["block"], base_m["results"]["block"]["chance"]["balanced_acc"])
+    stale = out / "block_confusion.png"
+    if stale.exists():
+        stale.unlink()
 
 
 def main():
@@ -251,12 +292,17 @@ def main():
     ap.add_argument("--dir", default="decoding_v2")
     ap.add_argument("--out", default=None)
     ap.add_argument("--data-root", default=DATA_ROOT)
+    ap.add_argument("--only", choices=["static"], default=None,
+                    help="regenerate only choice_confusion.png / block_recall.png in an "
+                         "existing plot dir (audits still run first)")
     args = ap.parse_args()
     eid = args.eid.removesuffix("_aligned")
     root = RESULTS / args.dir
     out = Path(args.out) if args.out else root / "plots" / eid
-    if out.exists() and any(out.iterdir()):
+    if args.only is None and out.exists() and any(out.iterdir()):
         print(f"ERROR: {out} already holds plots"); return 2
+    if args.only is not None and not out.is_dir():
+        print(f"ERROR: --only needs an existing plot dir: {out}"); return 2
 
     probe_dir, base_dir = root / "probe" / eid, root / "baseline" / eid
     probe_m = json.loads((probe_dir / "metrics.json").read_text())
@@ -286,6 +332,11 @@ def main():
         assert deltas[n]["point"]["null"] == base_m["results"][n]["chance"][k]
         assert abs(deltas[n]["point"]["linear"] - base_m["results"][n]["linear"][k]) <= ATOL
 
+    if args.only == "static":
+        plot_static(out, eid, tg, probe_p, linear, base_m)
+        print(f"wrote class plots to {out}")
+        return 0
+
     sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
     src = probe_m["source"]
@@ -299,10 +350,7 @@ def main():
         if n in deltas:
             selected[n] = plot_gt_pred(out / f"{SHORT[n]}_gt_pred.png", n, tg,
                                        probe_p[f"{n}_pred"], linear[n], deltas[n], title)
-    for n in dc.STATIC:
-        if n in deltas:
-            plot_confusion(out / f"{n}_confusion.png", n, tg, probe_p[f"{n}_pred"], linear[n],
-                           deltas[n], base_m["results"][n]["chance"], title)
+    plot_static(out, eid, tg, probe_p, linear, base_m)
 
     (out / "plot_audit.json").write_text(json.dumps({
         "eid": eid, "dir": args.dir, "code": sha, "audit": audit,
