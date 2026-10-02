@@ -468,6 +468,15 @@ def main():
     check("aggregate: half_recall uses valid p(left)=0.5 test trials only",
           da.half_recall(yb, np.array([0, 1, 0, 2, 1, 0]), mb) == 0.5)
 
+    # ---------------------------------------------------------- block 0.2-vs-0.8 check
+    import decode_block_check as dbc
+    tb = {"y": np.array([0, 2, 1, 0, 2, 2]), "mask": np.array([1, 1, 1, 1, 1, 0], bool)}
+    sub = dbc.biased_target(tb)
+    yv, pv = tb["y"][sub["mask"]], np.array([0, 1, 1, 0, 2, 2])[sub["mask"]]
+    check("block check: only true 0.2/0.8 trials kept; a 0.5 prediction counts as an error",
+          sub["mask"].tolist() == [True, True, False, True, False, False]
+          and np.isclose(dc.static_metrics(yv, pv)["balanced_acc"], (1.0 + 0.0) / 2))
+
     # ---------------------------------------------------------- shared preprocessing
     src = (REPO / "script" / "decode_baseline.py").read_text()
     check("baseline uses the probe's read_behaviour and dc.prepare_targets",
