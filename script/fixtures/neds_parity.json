@@ -1,0 +1,94 @@
+{
+  "provenance": {
+    "source": "user-supplied NEDS reference copy (neds_scripts/), not a git checkout",
+    "neds_commit": "unknown",
+    "sha256": {
+      "base.py": "46ee561802faaca0a1f8898de25b6bf02766c4e4987f698535cdcd6ae24b13aa",
+      "eval_utils.py": "c218e78f58f5b3e170c71940629c9d2a08a51ac137a03e2726c98c29459741cd",
+      "ibl_data_utils.py": "87626cdc03587a5bf87192cd010fd75df9c3a39e6bf119cd80da728ce13f84de",
+      "mm.py": "5539796cf50fec999531c4ed7296cb02ac333af861b966777e02b33f36d9eb64"
+    },
+    "generator": "script/make_neds_fixtures.py"
+  },
+  "literals": {
+    "choice_lookup": {
+      "-1.0": 0,
+      "1.0": 1
+    },
+    "block_lookup": {
+      "0.2": 0,
+      "0.5": 1,
+      "0.8": 2
+    },
+    "var_value2label": {
+      "block": [
+        [
+          [
+            0.2
+          ],
+          "p(left)=0.2"
+        ],
+        [
+          [
+            0.5
+          ],
+          "p(left)=0.5"
+        ],
+        [
+          [
+            0.8
+          ],
+          "p(left)=0.8"
+        ]
+      ],
+      "choice": [
+        [
+          [
+            -1.0
+          ],
+          "right"
+        ],
+        [
+          [
+            1.0
+          ],
+          "left"
+        ]
+      ],
+      "reward": [
+        [
+          [
+            0.0
+          ],
+          "no reward"
+        ],
+        [
+          [
+            1.0
+          ],
+          "reward"
+        ]
+      ]
+    }
+  },
+  "psth_layouts": [
+    "random_80",
+    "small_cells",
+    "one_cell"
+  ],
+  "psth": {
+    "random_80": {
+      "r2_psth": 0.6823190207628369,
+      "r2_trial": 0.6776858112489271
+    },
+    "small_cells": {
+      "r2_psth": 0.7155195149549372,
+      "r2_trial": 0.6852934721985162
+    },
+    "one_cell": {
+      "r2_psth": 0.727492039461185,
+      "r2_trial": 0.6627603911366801
+    }
+  },
+  "npz_sha256": "4b2a9f974c462e81dbb26cc736195820a63dc4a9ffaf24e49e6468e97ad44571"
+}

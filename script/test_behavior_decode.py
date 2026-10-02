@@ -3,16 +3,20 @@
 
     python script/test_behavior_decode.py
 
-Parity checks run NEDS's OWN code (functions and literals extracted from the
-reference copy in neds_scripts/ with ast, not restated), against
-decode_components. Also: loss semantics, strict split isolation, selection
-bookkeeping, and the held-in guard.
+Parity checks compare decode_components against committed golden fixtures
+(script/fixtures/neds_parity.{json,npz}) holding NEDS's own literals and the
+outputs of NEDS's own functions, made by make_neds_fixtures.py. They need no
+NEDS checkout. When the reference copy neds_scripts/ is present (and
+DECODE_TESTS_NO_NEDS is unset), the suite also re-derives every fixture value
+from that source and checks the recorded file hashes. Also: loss semantics,
+strict split isolation, selection bookkeeping, and the held-in guard.
 """
 
-import ast
+import hashlib
+import json
+import os
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -33,25 +37,16 @@ def check(name, ok, detail=""):
     results.append((bool(ok), name, detail))
 
 
-def neds_functions(path, names, extra_globals=None):
-    """Exec the named top-level functions from a NEDS file, verbatim."""
-    tree = ast.parse(path.read_text())
-    src = [ast.get_source_segment(path.read_text(), n) for n in tree.body
-           if isinstance(n, ast.FunctionDef) and n.name in names]
-    assert len(src) == len(names), f"missing NEDS functions in {path.name}"
-    g = {"np": np, "r2_score_sklearn": r2_score_sklearn, "r2_score": r2_score_sklearn,
-         **(extra_globals or {})}
-    exec("\n\n".join(src), g)
-    return g
+FIXTURES = REPO / "script" / "fixtures"
+FIX = json.loads((FIXTURES / "neds_parity.json").read_text())
+FIXNPZ = np.load(FIXTURES / "neds_parity.npz")
+NEDS_ON = NEDS.is_dir() and not os.environ.get("DECODE_TESTS_NO_NEDS")
 
 
-def neds_literal(path, target):
-    """The dict literal assigned to ``target`` anywhere in a NEDS file."""
-    for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == target for t in node.targets):
-            return ast.literal_eval(node.value)
-    raise KeyError(target)
+def fixture_value2label():
+    """var_value2label from the fixture, with NEDS's tuple keys restored."""
+    return {var: {tuple(k): v for k, v in pairs}
+            for var, pairs in FIX["literals"]["var_value2label"].items()}
 
 
 def synthetic_raw(rng, n=(60, 12, 20), T=100, nan_trials=(3, 7)):
@@ -75,26 +70,22 @@ def main():
     rng = np.random.default_rng(0)
 
     # ---------------------------------------------------------- component parity
+    check("fixture: npz matches the sha256 recorded in neds_parity.json",
+          hashlib.sha256((FIXTURES / "neds_parity.npz").read_bytes()).hexdigest() == FIX["npz_sha256"])
     for name, lit in (("choice", "choice_lookup"), ("block", "block_lookup")):
-        lookup = neds_literal(NEDS / "base.py", lit)
+        lookup = FIX["literals"][lit]
         vals = np.array([float(k) for k in lookup] * 3, dtype=np.float32)
-        neds_labels = np.array([lookup[str(x)] for x in vals])   # base.py:527-528
+        neds_labels = np.array([lookup[str(x)] for x in vals])   # NEDS base.py:527-528
         ours, mask = dc.encode_static(name, vals)
-        check(f"parity: {name} encoding == NEDS {lit}", mask.all() and np.array_equal(ours, neds_labels),
-              str(lookup))
+        check(f"parity: {name} encoding == NEDS {lit} (fixture)",
+              mask.all() and np.array_equal(ours, neds_labels), str(lookup))
     labels, mask = dc.encode_static("choice", np.array([0.0, np.nan, 1.0]))
     check("choice 0 and NaN are masked, +1 kept", list(mask) == [False, False, True])
 
-    ad_globals = neds_functions(NEDS / "ibl_data_utils.py", ["align_data"],
-                                {"DYNAMIC_VARS": ["wheel-speed", "whisker-motion-energy"],
-                                 "standardize_lfp_data": None})
-    wheel = rng.gamma(2.0, 1.0, (30, 100))
-    spikes = np.zeros((30, 100, 4))
-    _, neds_beh, _, _, _ = ad_globals["align_data"](
-        spikes, {"wheel-speed": list(wheel)}, None, beh_names=["wheel-speed"], trials_mask=None)
+    wheel = FIXNPZ["align_wheel"]
     ours = dc.minmax_scale(wheel, wheel.min(), wheel.max())
-    check("parity: min-max formula == NEDS align_data (same statistics)",
-          np.allclose(ours, neds_beh["wheel-speed"], rtol=0, atol=1e-12))
+    check("parity: min-max formula == NEDS align_data output (fixture, same statistics)",
+          np.allclose(ours, FIXNPZ["align_wheel_neds_output"], rtol=0, atol=1e-12))
 
     torch.manual_seed(0)
     x = torch.randn(5, 100, 16)
@@ -103,24 +94,29 @@ def main():
           sh(x).shape == (5, 3) and bool(((sh.token_weight >= 0) & (sh.token_weight < 1)).all()))
     check("parity: dynamic head (B,T,H)->(B,T)", dh(x).shape == (5, 100))
 
-    ev = neds_functions(NEDS / "eval_utils.py",
-                        ["compute_PSTH", "compute_all_psth", "compute_R2_psth",
-                         "compute_R2_main", "plot_psth"])
-    K = 80
-    y, pred = rng.normal(size=(K, 100)), rng.normal(size=(K, 100))
-    pred = 0.6 * y + 0.4 * pred
-    cond = np.stack([rng.choice([0.2, 0.5, 0.8], K), rng.choice([-1.0, 1.0], K),
-                     rng.choice([0.0, 1.0], K)], axis=1)       # (block, choice, reward)
-    X = np.zeros((K, 100, 4))
-    X[:, :, 0], X[:, :, 1], X[:, :, 2] = cond[:, 1:2], cond[:, 2:3], cond[:, 0:1]
-    name2idx = {"block": [2], "choice": [0], "reward": [1], "wheel": [3]}
-    r2_psth, r2_trial = ev["plot_psth"](X, y, pred, ["block", "choice", "reward"], name2idx, {},
-                                        save_plot=False)
-    ours = dc.dynamic_metrics(y, pred, cond)
-    check("parity: PSTH R2 == NEDS plot_psth", np.isclose(ours["r2_psth"], r2_psth, rtol=0, atol=1e-12),
-          f"{ours['r2_psth']:.6f} vs {r2_psth:.6f}")
-    check("parity: trial R2 == NEDS plot_psth (unsubtracted)",
-          np.isclose(ours["r2_trial"], r2_trial, rtol=0, atol=1e-12))
+    for layout in FIX["psth_layouts"]:
+        cond, y, pred = (FIXNPZ[f"psth_{layout}_{k}"] for k in ("cond", "y", "pred"))
+        ours = dc.dynamic_metrics(y, pred, cond)
+        ref = FIX["psth"][layout]
+        check(f"parity: PSTH and trial R2 == NEDS plot_psth (fixture, {layout})",
+              np.isclose(ours["r2_psth"], ref["r2_psth"], rtol=0, atol=1e-12)
+              and np.isclose(ours["r2_trial"], ref["r2_trial"], rtol=0, atol=1e-12),
+              f"{ours['r2_psth']:.6f}/{ours['r2_trial']:.6f} vs {ref['r2_psth']:.6f}/{ref['r2_trial']:.6f}")
+
+    if NEDS_ON:
+        import make_neds_fixtures as mnf
+        hashes = {f: mnf.sha256(NEDS / f) for f in FIX["provenance"]["sha256"]}
+        check("source: neds_scripts/ files hash to the values recorded in the fixture",
+              hashes == FIX["provenance"]["sha256"],
+              ", ".join(f for f in hashes if hashes[f] != FIX["provenance"]["sha256"][f]))
+        inputs = {k: FIXNPZ[k] for k in FIXNPZ.files}
+        lit, aligned, psth = mnf.neds_outputs(NEDS, inputs, FIX["psth_layouts"])
+        check("source: NEDS literals re-extracted == fixture", lit == FIX["literals"])
+        check("source: NEDS align_data re-run == fixture output",
+              np.array_equal(aligned, FIXNPZ["align_wheel_neds_output"]))
+        check("source: NEDS plot_psth re-run == fixture outputs", psth == FIX["psth"])
+    else:
+        print("note: neds_scripts/ absent or DECODE_TESTS_NO_NEDS set; parity checked from fixtures only")
     from sklearn.metrics import accuracy_score, balanced_accuracy_score
     a, b = rng.integers(0, 3, 50), rng.integers(0, 3, 50)
     m = dc.static_metrics(a, b)
@@ -363,7 +359,7 @@ def main():
     check("confusion: rows are true classes; diagonal mean == balanced accuracy",
           np.array_equal(counts.sum(1), np.bincount(yy, minlength=3))
           and np.isclose(np.diag(norm).mean(), bas(yy, pp), rtol=0, atol=1e-12))
-    neds_labels = neds_literal(NEDS / "eval_utils.py", "var_value2label")
+    neds_labels = fixture_value2label()
 
     def labels_match(class_names):
         ok = True
@@ -373,7 +369,7 @@ def main():
                 ours = class_names[name][cls]
                 ok &= (ours.split(" ")[0] == neds)
         return ok
-    check("confusion: class labels map through LOOKUP and match NEDS var_value2label",
+    check("confusion: class labels map through LOOKUP and match NEDS var_value2label (fixture)",
           labels_match(dc.CLASS_NAMES)
           and dc.CLASS_NAMES["choice"] == {0: "right (-1)", 1: "left (+1)"}
           and dc.CLASS_NAMES["block"] == {0: "p(left)=0.2", 1: "p(left)=0.5", 2: "p(left)=0.8"})

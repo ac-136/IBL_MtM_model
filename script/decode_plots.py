@@ -59,8 +59,13 @@ def audit_close(a, b):
     return {"exact": float(a) == float(b), "within_tol": diff <= ATOL, "max_diff": diff}
 
 
-def run_audits(eid, probe_m, probe_p, base_m, tg, cond, X):
-    """Recompute everything plotted; raise on any mismatch. Returns (audit, linear preds)."""
+def run_audits(eid, probe_m, probe_p, base_m, tg, cond, X, base_p=None):
+    """Recompute everything plotted; raise on any mismatch. Returns (audit, linear preds).
+
+    Linear predictions come from the baseline's saved preds.npz when it exists
+    (runs from 8267940 on), audited EXACTLY against its metrics.json; otherwise
+    the baseline is refit (X must then be given) and audited as before.
+    """
     audit = {"probe": {}, "linear": {}, "chance": {}}
     bad = []
     names = [n for n in dc.TARGETS if n in probe_m["metrics"]]
@@ -77,34 +82,23 @@ def run_audits(eid, probe_m, probe_p, base_m, tg, cond, X):
         if not exact:
             bad.append(f"probe {n}: recomputed metrics differ")
 
-        # linear: refit, then compare with the saved baseline run
-        if n in dc.STATIC:
-            pred, sel = db.fit_static(n, X, tg, seed=42)
-            hyper = "C"
-        else:
-            pred, sel = db.fit_dynamic(n, X, tg)
-            hyper = "alpha"
-        linear[n] = pred
         saved_lin = base_m["results"][n]["linear"]
-        rec_lin = dc.metrics_for(n, tg["test"][n], pred, cond)
-        a = {"chosen_" + hyper: {"saved": saved_lin["selection"]["chosen"][hyper],
-                                 "refit": sel["chosen"][hyper]}}
-        if sel["chosen"][hyper] != saved_lin["selection"]["chosen"][hyper]:
-            bad.append(f"linear {n}: chosen {hyper} differs")
-        for k in [k for k, v in saved_lin.items() if isinstance(v, float)]:
-            a[k] = audit_close(rec_lin[k], saved_lin[k])
-            categorical = n in dc.STATIC            # accuracies are counts over labels
-            if (categorical and not a[k]["exact"]) or not a[k]["within_tol"]:
-                bad.append(f"linear {n} {k}: refit {rec_lin[k]} vs saved {saved_lin[k]}")
-        vkey = "val_ce" if n in dc.STATIC else "val_mse"
-        vd = [audit_close(r[vkey], s[vkey]) for r, s in
-              zip(sel["grid"], saved_lin["selection"]["grid"])]
-        a["val_grid"] = {"exact": all(d["exact"] for d in vd),
-                         "max_diff": max(d["max_diff"] for d in vd)}
-        if not all(d["max_diff"] <= 1e-7 * max(1.0, abs(s[vkey])) for d, s in
-                   zip(vd, saved_lin["selection"]["grid"])):
-            bad.append(f"linear {n}: val grid losses differ beyond tolerance")
-        audit["linear"][n] = a
+        if base_p is not None:
+            # linear: saved test predictions; targets and every metric must match exactly
+            pred = base_p[f"{n}_pred"]
+            linear[n] = pred
+            same_tg_lin = (np.array_equal(base_p[f"{n}_y"], tg["test"][n]["y"])
+                           and np.array_equal(base_p[f"{n}_mask"], tg["test"][n]["mask"]))
+            rec_lin = dc.metrics_for(n, tg["test"][n], pred, cond)
+            exact_lin = same_tg_lin and all(rec_lin[k] == saved_lin[k]
+                                            for k, v in saved_lin.items() if isinstance(v, float))
+            audit["linear"][n] = {"source": "saved preds.npz", "targets_identical": same_tg_lin,
+                                  "metrics_exact": exact_lin}
+            if not exact_lin:
+                bad.append(f"linear {n}: saved predictions do not reproduce saved metrics")
+        else:
+            pred = refit_linear(n, X, tg, saved_lin, cond, audit, bad)
+            linear[n] = pred
 
         # chance: train-only null reproduces the saved chance metrics exactly
         null_pred, _ = dc.chance_predictions(n, tg["train"][n], len(pred))
@@ -117,6 +111,37 @@ def run_audits(eid, probe_m, probe_p, base_m, tg, cond, X):
     if bad:
         raise SystemExit("AUDIT FAILED:\n  " + "\n  ".join(bad))
     return audit, linear
+
+
+def refit_linear(n, X, tg, saved_lin, cond, audit, bad):
+    """Refit the raw-spike baseline (runs that saved no preds) and audit it:
+    chosen C/alpha and categorical metrics exact, continuous ones to 1e-9."""
+    if n in dc.STATIC:
+        pred, sel = db.fit_static(n, X, tg, seed=42)
+        hyper = "C"
+    else:
+        pred, sel = db.fit_dynamic(n, X, tg)
+        hyper = "alpha"
+    rec_lin = dc.metrics_for(n, tg["test"][n], pred, cond)
+    a = {"chosen_" + hyper: {"saved": saved_lin["selection"]["chosen"][hyper],
+                             "refit": sel["chosen"][hyper]}}
+    if sel["chosen"][hyper] != saved_lin["selection"]["chosen"][hyper]:
+        bad.append(f"linear {n}: chosen {hyper} differs")
+    for k in [k for k, v in saved_lin.items() if isinstance(v, float)]:
+        a[k] = audit_close(rec_lin[k], saved_lin[k])
+        categorical = n in dc.STATIC            # accuracies are counts over labels
+        if (categorical and not a[k]["exact"]) or not a[k]["within_tol"]:
+            bad.append(f"linear {n} {k}: refit {rec_lin[k]} vs saved {saved_lin[k]}")
+    vkey = "val_ce" if n in dc.STATIC else "val_mse"
+    vd = [audit_close(r[vkey], s[vkey]) for r, s in
+          zip(sel["grid"], saved_lin["selection"]["grid"])]
+    a["val_grid"] = {"exact": all(d["exact"] for d in vd),
+                     "max_diff": max(d["max_diff"] for d in vd)}
+    if not all(d["max_diff"] <= 1e-7 * max(1.0, abs(s[vkey])) for d, s in
+               zip(vd, saved_lin["selection"]["grid"])):
+        bad.append(f"linear {n}: val grid losses differ beyond tolerance")
+    audit["linear"][n] = dict(a, source="refit")
+    return pred
 
 
 def session_cohort(eid):
@@ -307,10 +332,13 @@ def main():
     prepared = dc.prepare_targets(raw)
     tg = prepared["targets"]
     cond = np.stack([raw["test"][c] for c in dc.PSTH_CONDITIONS], axis=1)
-    X = {s: db.binned_spikes(eid, args.data_root, s) for s in dc.SPLITS}
+    base_preds = base_dir / "preds.npz"
+    base_p = np.load(base_preds) if base_preds.is_file() else None
+    X = None if base_p is not None else {s: db.binned_spikes(eid, args.data_root, s)
+                                         for s in dc.SPLITS}
 
     try:
-        audit, linear = run_audits(eid, probe_m, probe_p, base_m, tg, cond, X)
+        audit, linear = run_audits(eid, probe_m, probe_p, base_m, tg, cond, X, base_p)
     except SystemExit as e:
         print(e); return 3
 

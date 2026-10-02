@@ -185,3 +185,6 @@ results
 
 results_slurm/
 changes/
+# NEDS reference copy (optional, local). Parity is reproducible from the committed
+# fixtures in script/fixtures/ (see script/make_neds_fixtures.py).
+neds_scripts/

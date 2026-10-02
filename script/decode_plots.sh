@@ -31,9 +31,14 @@ set -u
 DIR=${1:-decoding_v2}
 shift $(( $# > 0 ? 1 : 0 ))
 EXTRA=("$@")
-SESSIONS=(71e55bfe-5a3a-4cba-bdc7-f085140d798e 862ade13-53cd-4221-a3fa-dda8643641f2
-          4aa1d525-5c7d-4c50-a147-ec53a9014812 b9c205c3-feac-485b-a89d-afc96d9cb280
-          5b49aca6-a6f4-4075-931a-617ad64c219c)
+# EIDS (space-separated, via --export) overrides the default five sessions.
+if [ -n "${EIDS:-}" ]; then
+    read -r -a SESSIONS <<< "$EIDS"
+else
+    SESSIONS=(71e55bfe-5a3a-4cba-bdc7-f085140d798e 862ade13-53cd-4221-a3fa-dda8643641f2
+              4aa1d525-5c7d-4c50-a147-ec53a9014812 b9c205c3-feac-485b-a89d-afc96d9cb280
+              5b49aca6-a6f4-4075-931a-617ad64c219c)
+fi
 
 find_repo_root() {
     local c
